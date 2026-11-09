@@ -1,9 +1,9 @@
 //! Calibration + filtering glue between the receiver and the engine (port of AppDelegate's aim handling).
 use super::engine::Engine;
 use super::settings::Settings;
-use crate::geometry::wrap;
-use crate::one_euro::OneEuro;
-use crate::protocol::Event;
+use airwand::geometry::wrap;
+use airwand::one_euro::OneEuro;
+use airwand::protocol::Event;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};

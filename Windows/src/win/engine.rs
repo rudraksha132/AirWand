@@ -1,7 +1,7 @@
 //! Owns the system cursor (port of PointerEngine). Sources feed target points; a dedicated thread
 //! eases the cursor toward the target ~250 times a second, looking a few ms ahead along the aim velocity.
 use super::native;
-use crate::geometry::{self, Rect, P};
+use airwand::geometry::{self, Rect, P};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -300,7 +300,7 @@ impl Engine {
 
     /// dy > 0 = content moves down (natural), like the phone's scroll strip.
     pub fn scroll(&self, dx: f64, dy: f64) {
-        if !crate::validate::delta(dx, dy) {
+        if !airwand::validate::delta(dx, dy) {
             return;
         }
         let (ix, iy);
@@ -323,7 +323,7 @@ impl Engine {
 
     /// Relative move, used by the phone's trackpad mode.
     pub fn nudge(&self, dx: f64, dy: f64) {
-        if !crate::validate::delta(dx, dy) {
+        if !airwand::validate::delta(dx, dy) {
             return;
         }
         let p;

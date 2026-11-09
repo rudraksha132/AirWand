@@ -2,8 +2,8 @@
 //! Nothing goes over Wi-Fi and there is no server.
 use super::log;
 use super::settings::Settings;
-use crate::protocol::{self, Event, LinkState, Packet};
-use crate::validate;
+use airwand::protocol::{self, Event, LinkState, Packet};
+use airwand::validate;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -228,7 +228,7 @@ impl Receiver {
         let adv = GattServiceProviderAdvertisingParameters::new()?;
         adv.SetIsDiscoverable(true)?;
         adv.SetIsConnectable(true)?;
-        provider.StartAdvertising(&adv)?;
+        provider.StartAdvertisingWithParameters(&adv)?;
         *self.provider.lock().unwrap() = Some(Agile(provider));
         log::write("advertising started");
         Ok(())
@@ -479,7 +479,7 @@ impl Receiver {
         if let Ok(list) = ch.SubscribedClients() {
             for c in list {
                 if client_key(&c).as_deref() == Some(key) {
-                    let _ = ch.NotifyValueAsync(&buf, &c);
+                    let _ = ch.NotifyValueForSubscribedClientAsync(&buf, &c);
                 }
             }
         }
