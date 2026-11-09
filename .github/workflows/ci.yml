@@ -1,0 +1,26 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  windows-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release
+        working-directory: Windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: airwand
+          path: Windows/target/release/airwand.exe
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --lib
+        working-directory: Windows
+  web-syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: node -e "const s=require('fs').readFileSync('Web/index.html','utf8');new Function(s.match(/<script>([\\s\\S]*)<\\/script>/)[1])"

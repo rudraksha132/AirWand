@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>AirWand</title>
+<link rel="icon" href="icon.png">
+<style>
+  :root { color-scheme: dark; --bg:#0e1013; --card:#1a1e24; --fg:#eef1f5; --dim:#8a93a0; --acc:#5df0c0; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:16px system-ui,sans-serif; overscroll-behavior:none; }
+  body { display:flex; flex-direction:column; padding:max(16px,env(safe-area-inset-top)) 16px max(16px,env(safe-area-inset-bottom)); gap:12px; }
+  h1 { margin:0; font-size:30px; }
+  p { color:var(--dim); margin:0; }
+  button { font:inherit; color:var(--fg); background:var(--card); border:0; border-radius:14px; padding:14px; }
+  button.main { background:var(--acc); color:#000; font-weight:700; padding:18px; }
+  .row { display:flex; gap:10px; } .row > * { flex:1; }
+  #connect, #live { display:none; flex-direction:column; gap:12px; flex:1; min-height:0; }
+  #pad, #scroll { background:var(--card); border-radius:18px; display:flex; align-items:center; justify-content:center; text-align:center; touch-action:none; user-select:none; -webkit-user-select:none; }
+  #pad { flex:1; padding:16px; }
+  #pad.on { outline:3px solid var(--acc); }
+  #scroll { height:56px; color:var(--dim); font-size:13px; }
+  .seg button.sel { background:var(--acc); color:#000; }
+  #msg { color:var(--dim); font-size:14px; min-height:1.2em; }
+</style>
+</head>
+<body>
+<div id="connect">
+  <h1>AirWand</h1>
+  <p>Your phone becomes a pointer for your Windows PC over Bluetooth. Start AirWand on the PC first.</p>
+  <p id="warn" style="color:#ff8a8a"></p>
+  <button class="main" id="btnConnect">Connect to PC</button>
+</div>
+
+<div id="live">
+  <div class="row"><b id="pcName" style="flex:3;align-self:center">Connected</b><button id="btnDisc">Disconnect</button></div>
+  <div id="codeBox" style="background:var(--card);border-radius:14px;padding:10px 14px;display:flex;justify-content:space-between;align-items:center"><span style="color:var(--dim);font-size:13px">Pairing code</span><b id="code" style="font-size:22px;letter-spacing:3px">······</b></div>
+  <div class="row seg"><button id="mPointer" class="sel">Pointer</button><button id="mTrack">Trackpad</button></div>
+  <div id="pad"><div><div id="padText">Tap to click · hold to drag</div><p style="font-size:13px">Point the top edge at the screen</p></div></div>
+  <div id="scroll">Slide here to scroll</div>
+  <div class="row"><button id="bRight">Right click</button><button id="bCenter">Center</button><button id="bPause">Pause</button></div>
+</div>
+<div id="stat" style="color:var(--dim);font-size:12px;text-align:center"></div>
+<div id="msg"></div>
+
+<script>
+'use strict';
+const SVC = '7e1a0001-3c2b-4f7d-9b61-2a9e5d0c4f10';
+const INP = '7e1a0002-3c2b-4f7d-9b61-2a9e5d0c4f10';
+const STA = '7e1a0003-3c2b-4f7d-9b61-2a9e5d0c4f10';
+const K = { hello:1, aim:2, press:3, release:4, right:5, scroll:6, center:7, pause:8, info:9, move:10 };
+const $ = id => document.getElementById(id);
+const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+const now = () => performance.now() / 1000;      // client clock; only compared with itself
+const msg = t => $('msg').textContent = t || '';
+
+// ---------- device id (persisted) ----------
+function deviceId() {
+  let id = null;
+  try { id = localStorage.getItem('deviceID'); } catch {}
+  if (!id) { id = crypto.randomUUID(); try { localStorage.setItem('deviceID', id); } catch {} }
+  return id;
+}
+
+// 6-digit code derived from the device ID; the PC shows the same code in its Allow dialog.
+async function pairCode() {
+  const h = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(deviceId().toLowerCase())));
+  const n = ((h[0] << 24) | (h[1] << 16) | (h[2] << 8) | h[3]) >>> 0;
+  return String(n % 1000000).padStart(6, '0');
+}
+pairCode().then(c => { $('code').textContent = c; }).catch(() => { $('codeBox').style.display = 'none'; });
+setInterval(() => { $('stat').textContent = inp && sensing ? `Sending ${sent} aim/s` : ''; sent = 0; }, 1000);
+
+// ---------- packets (little endian, see Shared/Protocol.swift) ----------
+function pkt(kind, len) { const b = new ArrayBuffer(len); const v = new DataView(b); v.setUint8(0, kind); return [b, v]; }
+const timed = kind => { const [b, v] = pkt(kind, 9); v.setFloat64(1, now(), true); return b; };
+function pair(kind, a, c) { const [b, v] = pkt(kind, 9); v.setFloat32(1, a, true); v.setFloat32(5, c, true); return b; }
+function aimPkt(t, az, el) { const [b, v] = pkt(K.aim, 17); v.setFloat64(1, t, true); v.setFloat32(9, az, true); v.setFloat32(13, el, true); return b; }
+// Two samples in 18 bytes (fits a default 20-byte write): the previous and the newest. If a write is late the receiver
+// still gets the older sample, and it drops duplicates by timestamp.
+let s1 = null, s2 = null, aimDirty = false;
+function buildAim() {
+  const a = s1, b = s2;
+  const dt = b && a ? Math.round((b.ms - a.ms)) : -1;
+  const dAz = b && a ? Math.round((b.az - a.az) * 100) : 0, dEl = b && a ? Math.round((b.el - a.el) * 100) : 0;
+  if (!a || dt < 1 || dt > 255 || Math.abs(dAz) > 32767 || Math.abs(dEl) > 32767)
+    return aimPkt(b.ms / 1000, b.az, b.el);
+  const [p, v] = pkt(11, 18);
+  v.setUint32(1, Math.round(a.ms), true); v.setFloat32(5, a.az, true); v.setFloat32(9, a.el, true);
+  v.setUint8(13, dt); v.setInt16(14, dAz, true); v.setInt16(16, dEl, true);
+  return p;
+}
+function helloPkt() {          // 18 bytes: fits a default 20-byte BLE write. Name travels in `info`.
+  const [b, v] = pkt(K.hello, 18);
+  const hex = deviceId().replace(/-/g, '');
+  for (let i = 0; i < 16; i++) v.setUint8(1 + i, parseInt(hex.substr(i * 2, 2), 16));
+  v.setUint8(17, 1);           // kind 1 = phone
+  return b;
+}
+async function infoPkt() {
+  let batt = 255;
+  try { const bt = await navigator.getBattery(); batt = Math.round(bt.level * 100); } catch {}
+  const model = isIOS ? 'iPhone (web)' : /Android/.test(navigator.userAgent) ? 'Android phone' : 'Web device';
+  const bytes = new TextEncoder().encode(model).slice(0, 18);
+  const [b, v] = pkt(K.info, 2 + bytes.length);
+  v.setUint8(1, batt);
+  new Uint8Array(b, 2).set(bytes);
+  return b;
+}
+
+// ---------- BLE link ----------
+let dev = null, inp = null, sta = null, want = false, infoTimer = null, sent = 0;
+let state = -1, pcPaused = false;
+const q = []; let latestAim = null, mv = [0, 0], sc = [0, 0], busy = false;
+
+function push(b) { q.push(b); if (q.length > 64) q.shift(); pump(); }
+async function pump() {
+  if (busy || !inp) return;
+  busy = true;
+  try {
+    for (;;) {
+      let b = q.shift();
+      if (!b) {
+        if (Math.abs(sc[0]) >= 0.5 || Math.abs(sc[1]) >= 0.5) { b = pair(K.scroll, sc[0], sc[1]); sc = [0, 0]; }
+        else if (mv[0] || mv[1]) { b = pair(K.move, mv[0], mv[1]); mv = [0, 0]; }
+        else if (aimDirty) { b = buildAim(); aimDirty = false; sent++; }
+        else break;
+      }
+      await inp.writeValueWithoutResponse(b);
+    }
+  } catch (e) {
+    await new Promise(r => setTimeout(r, 20));
+  } finally {
+    busy = false;
+    if (inp && (q.length || aimDirty || mv[0] || mv[1])) setTimeout(pump, 0);
+  }
+}
+
+function onStatus() {
+  const v = sta.value;
+  if (!v || v.byteLength < 2) return;
+  state = v.getUint8(0); pcPaused = v.getUint8(1) !== 0;
+  const name = new TextDecoder().decode(new Uint8Array(v.buffer, v.byteOffset + 2, v.byteLength - 2));
+  $('pcName').textContent = name || 'Connected';
+  msg(state === 0 ? 'On the PC, check the pairing code matches, then click Allow.' : state === 2 ? 'Denied on the PC. Disconnect and try again.' : '');
+  updateSensors();
+}
+
+async function link() {
+  const server = await dev.gatt.connect();
+  const svc = await server.getPrimaryService(SVC);
+  inp = await svc.getCharacteristic(INP);
+  sta = await svc.getCharacteristic(STA);
+  sta.addEventListener('characteristicvaluechanged', onStatus);
+  await sta.startNotifications();
+  try { await sta.readValue(); } catch {}
+  onStatus();
+  push(await infoPkt());
+  push(helloPkt());
+  clearInterval(infoTimer);
+  infoTimer = setInterval(async () => { if (inp) push(await infoPkt()); }, 30000);
+}
+
+async function connect() {
+  if (!navigator.bluetooth) { $('warn').textContent = 'Web Bluetooth is not available. Use Chrome on Android, or Bluefy on iPhone.'; return; }
+  try {
+    await sensorPermission();
+    dev = await navigator.bluetooth.requestDevice({ filters: [{ services: [SVC] }] });
+    want = true;
+    dev.addEventListener('gattserverdisconnected', onDrop);
+    msg('Connecting…');
+    await link();
+    show('live');
+    keepAwake();
+  } catch (e) {
+    msg(e.name === 'NotFoundError' ? 'No PC picked.' : 'Could not connect: ' + e.message);
+    inp = null;
+  }
+}
+
+async function onDrop() {
+  inp = null; state = -1; stopSensors();
+  if (!want) return;
+  msg('Connection lost. Retrying…');
+  for (let i = 0; want && i < 30; i++) {
+    try { await link(); msg(''); return; } catch { await new Promise(r => setTimeout(r, 1500)); }
+  }
+  if (want) { want = false; clearInterval(infoTimer); show('connect'); msg('Could not reconnect.'); }
+}
+
+function disconnect() {
+  want = false; stopSensors();
+  try { dev && dev.gatt.connected && dev.gatt.disconnect(); } catch {}
+  clearInterval(infoTimer); inp = null; show('connect'); msg('');
+}
+
+// ---------- motion → az/el (port of MotionAim.swift) ----------
+// el: gravity from the fused orientation (beta/gamma) → never drifts.
+// az: gyro rate about the true vertical, integrated.
+const D2R = Math.PI / 180;
+let up = null, az = 0, lastT = null, sensing = false, aimOn = true, paused = false;
+
+function onOrient(e) {
+  if (e.beta == null || e.gamma == null) return;
+  const b = e.beta * D2R, g = e.gamma * D2R;
+  up = [-Math.sin(g) * Math.cos(b), Math.sin(b), Math.cos(g) * Math.cos(b)];   // "up" in device axes
+}
+
+let bias = [0, 0, 0], stillFor = 0;
+function onMotion(e) {
+  const r = e.rotationRate;
+  if (!r || r.alpha == null) return;
+  const w = [r.beta, r.gamma, r.alpha];
+  if (!w.every(Number.isFinite)) return;
+  let u = up;
+  if (!u) {                              // fallback: accelerometer (iOS reports it with the opposite sign to Android)
+    const a = e.accelerationIncludingGravity;
+    if (!a || a.x == null) return;
+    const s = isIOS ? -1 : 1, n = Math.hypot(a.x, a.y, a.z);
+    if (!(n > 1)) return;
+    u = [s * a.x / n, s * a.y / n, s * a.z / n];
+  }
+  const t = e.timeStamp / 1000;
+  const dt = lastT == null ? 0 : Math.min(Math.max(t - lastT, 0), 0.05);
+  lastT = t;
+  // Gyro bias: while the phone is almost still for half a second, learn its resting rate and subtract it.
+  if (Math.hypot(w[0], w[1], w[2]) < 1.0) {
+    stillFor += dt;
+    if (stillFor > 0.5) for (let i = 0; i < 3; i++) bias[i] += (w[i] - bias[i]) * 0.02;
+  } else stillFor = 0;
+  const el = Math.asin(Math.max(-1, Math.min(1, u[1]))) / D2R;
+  const wUp = u[0] * (w[0] - bias[0]) + u[1] * (w[1] - bias[1]) + u[2] * (w[2] - bias[2]);   // deg/s, + = turning left
+  az += wUp * dt;
+  if (az > 360 || az < -360) az %= 360;
+  if (!Number.isFinite(az) || !Number.isFinite(el)) { az = 0; return; }
+  s1 = s2; s2 = { ms: e.timeStamp, az, el }; aimDirty = true;
+  pump();
+}
+
+async function sensorPermission() {
+  for (const C of [window.DeviceMotionEvent, window.DeviceOrientationEvent]) {
+    if (C && typeof C.requestPermission === 'function') {
+      if ((await C.requestPermission()) !== 'granted') throw new Error('Motion permission denied');
+    }
+  }
+}
+function startSensors() {
+  if (sensing) return; sensing = true; lastT = null;
+  addEventListener('deviceorientation', onOrient);
+  addEventListener('devicemotion', onMotion);
+}
+function stopSensors() {
+  if (!sensing) return; sensing = false;
+  removeEventListener('deviceorientation', onOrient);
+  removeEventListener('devicemotion', onMotion);
+  up = null; aimDirty = false; s1 = s2 = null;
+}
+function updateSensors() { (state === 1 && aimOn && !paused && !pcPaused) ? startSensors() : stopSensors(); }
+
+// ---------- touch UI ----------
+let pressing = false, trackpad = false, downXY = null, moved = false, lastXY = null;
+const buzz = () => navigator.vibrate && navigator.vibrate(10);
+const pad = $('pad');
+
+pad.addEventListener('pointerdown', e => {
+  e.preventDefault(); pad.setPointerCapture(e.pointerId);
+  pad.classList.add('on'); downXY = lastXY = [e.clientX, e.clientY]; moved = false;
+  if (!trackpad && !pressing) { pressing = true; buzz(); push(timed(K.press)); $('padText').textContent = 'Holding'; }
+});
+pad.addEventListener('pointermove', e => {
+  if (!downXY || !trackpad) return;
+  const dx = e.clientX - lastXY[0], dy = e.clientY - lastXY[1];
+  lastXY = [e.clientX, e.clientY];
+  if (Math.hypot(e.clientX - downXY[0], e.clientY - downXY[1]) > 6) moved = true;
+  if (moved) { mv[0] += dx * 1.8; mv[1] += dy * 1.8; pump(); }
+});
+function padUp() {
+  pad.classList.remove('on');
+  if (trackpad) { if (downXY && !moved) { buzz(); push(timed(K.press)); push(timed(K.release)); } }
+  else if (pressing) { pressing = false; push(timed(K.release)); $('padText').textContent = 'Tap to click · hold to drag'; }
+  downXY = null;
+}
+pad.addEventListener('pointerup', padUp);
+pad.addEventListener('pointercancel', padUp);
+
+let sy = null;
+$('scroll').addEventListener('pointerdown', e => { e.preventDefault(); $('scroll').setPointerCapture(e.pointerId); sy = e.clientY; });
+$('scroll').addEventListener('pointermove', e => { if (sy == null) return; sc[1] += (e.clientY - sy) * 2.2; sy = e.clientY; pump(); });
+$('scroll').addEventListener('pointerup', () => sy = null);
+$('scroll').addEventListener('pointercancel', () => sy = null);
+
+function setMode(t) {
+  trackpad = t; aimOn = !t;
+  $('mPointer').classList.toggle('sel', !t); $('mTrack').classList.toggle('sel', t);
+  $('bCenter').style.display = t ? 'none' : '';
+  $('padText').textContent = t ? 'Slide to move · tap to click' : 'Tap to click · hold to drag';
+  updateSensors();
+}
+$('mPointer').onclick = () => setMode(false);
+$('mTrack').onclick = () => setMode(true);
+$('bRight').onclick = () => { buzz(); push(timed(K.right)); };
+$('bCenter').onclick = () => { buzz(); const [b, v] = pkt(K.center, 1); push(b); };
+$('bPause').onclick = () => {
+  paused = !paused; $('bPause').textContent = paused ? 'Resume' : 'Pause';
+  const [b, v] = pkt(K.pause, 2); v.setUint8(1, paused ? 1 : 0); push(b); updateSensors();
+};
+$('btnConnect').onclick = connect;
+$('btnDisc').onclick = disconnect;
+
+// ---------- misc ----------
+let lock = null;
+async function keepAwake() { try { lock = await navigator.wakeLock.request('screen'); } catch {} }
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && want) keepAwake(); });
+function show(id) { $('connect').style.display = id === 'connect' ? 'flex' : 'none'; $('live').style.display = id === 'live' ? 'flex' : 'none'; }
+show('connect');
+if (!navigator.bluetooth) $('warn').textContent = 'Web Bluetooth is not available in this browser. Use Chrome on Android, or Bluefy on iPhone.';
+</script>
+</body>
+</html>
