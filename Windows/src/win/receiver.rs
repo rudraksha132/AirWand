@@ -185,7 +185,7 @@ impl Receiver {
 
         let me = self.clone();
         let on_write: TypedEventHandler<GattLocalCharacteristic, GattWriteRequestedEventArgs> =
-            TypedEventHandler::new(move |_, args| {
+            TypedEventHandler::new(move |_: &Option<GattLocalCharacteristic>, args: &Option<GattWriteRequestedEventArgs>| {
                 if let Some(a) = args.as_ref() {
                     if let Err(e) = me.on_write(a) {
                         log::write(&format!("write handler: {e}"));
@@ -197,7 +197,7 @@ impl Receiver {
 
         let me = self.clone();
         let on_read: TypedEventHandler<GattLocalCharacteristic, GattReadRequestedEventArgs> =
-            TypedEventHandler::new(move |_, args| {
+            TypedEventHandler::new(move |_: &Option<GattLocalCharacteristic>, args: &Option<GattReadRequestedEventArgs>| {
                 if let Some(a) = args.as_ref() {
                     let _ = me.on_read(a);
                 }
@@ -206,7 +206,7 @@ impl Receiver {
         status.ReadRequested(&on_read)?;
 
         let me = self.clone();
-        let on_subs: TypedEventHandler<GattLocalCharacteristic, IInspectable> = TypedEventHandler::new(move |sender, _| {
+        let on_subs: TypedEventHandler<GattLocalCharacteristic, IInspectable> = TypedEventHandler::new(move |sender: &Option<GattLocalCharacteristic>, _: &Option<IInspectable>| {
             if let Some(ch) = sender.as_ref() {
                 me.on_subscribers(ch);
             }
@@ -216,7 +216,7 @@ impl Receiver {
 
         let me = self.clone();
         let on_adv: TypedEventHandler<GattServiceProvider, GattServiceProviderAdvertisementStatusChangedEventArgs> =
-            TypedEventHandler::new(move |sender, _| {
+            TypedEventHandler::new(move |sender: &Option<GattServiceProvider>, _: &Option<GattServiceProviderAdvertisementStatusChangedEventArgs>| {
                 if let Some(p) = sender.as_ref() {
                     let on = p.AdvertisementStatus().ok() == Some(GattServiceProviderAdvertisementStatus::Started);
                     me.advertising.store(on, Ordering::Relaxed);
