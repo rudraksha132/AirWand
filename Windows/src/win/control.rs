@@ -4,6 +4,7 @@ use super::engine::Engine;
 use super::log;
 use super::receiver::Receiver;
 use super::settings::Settings;
+use airwand::mdns::{self, Mdns};
 use airwand::net::jstr;
 use airwand::protocol::LinkState;
 use airwand::server::{self, Assets, Backend, Sink};
@@ -13,6 +14,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 pub const PORT: u16 = 47821;
+/// Also tried when Wi-Fi is on, so the phone link can be `http://airwand.local` with no port. Skipped if something else owns it.
+pub const SHORT_PORT: u16 = 80;
 pub static GAME_HTML: &[u8] = include_bytes!("../../game.html");
 
 pub struct Control {
@@ -23,6 +26,8 @@ pub struct Control {
     paused: Arc<AtomicBool>,
     wifi_error: Mutex<Option<String>>,
     wifi_listening: AtomicBool,
+    short_port: AtomicBool,
+    mdns: Mutex<Option<Arc<Mdns>>>,
     autostart: AtomicBool,
     quit: AtomicBool,
     /// (aim count at last sample, when, aims per second)
@@ -45,6 +50,8 @@ impl Control {
             paused,
             wifi_error: Mutex::new(None),
             wifi_listening: AtomicBool::new(false),
+            short_port: AtomicBool::new(false),
+            mdns: Mutex::new(None),
             autostart: AtomicBool::new(query_autostart()),
             quit: AtomicBool::new(false),
             rate: Mutex::new((0, Instant::now(), 0)),
@@ -100,7 +107,7 @@ fn set_autostart(on: bool) -> bool {
 
 /// Opens the control panel in its own window (Edge or Chrome app mode), else the default browser.
 pub fn open_panel() {
-    let url = format!("http://127.0.0.1:{PORT}/ui");
+    let url = format!("http://127.0.0.1:{PORT}/ui"); // the same page answers at http://localhost:{PORT}
     // Open at the size and place the user left it in.
     let s = Settings::load();
     let (w, h) = if s.win_w >= 480 && s.win_h >= 360 { (s.win_w, s.win_h) } else { (1040, 820) };
@@ -134,6 +141,34 @@ pub fn open_game() {
     }
 }
 
+fn assets() -> Assets {
+    Assets {
+        phone: include_str!("../../../Web/index.html"),
+        panel: include_str!("../../panel.html"),
+        icon: include_bytes!("../../../Web/icon.png"),
+        font: include_bytes!("../../../Web/Geist.woff2"),
+        font_mono: include_bytes!("../../../Web/GeistMono.woff2"),
+    }
+}
+
+/// The nicer phone links: the same web server on port 80, and the `airwand.local` name.
+/// Both are optional; the plain `http://<ip>:47821` link always works.
+fn start_lan_extras(ctl: &Arc<Control>) {
+    let c2 = ctl.clone();
+    let _ = std::thread::Builder::new().name("airwand-server80".into()).spawn(move || match server::bind(SHORT_PORT, true) {
+        Ok(listener) => {
+            c2.short_port.store(true, Ordering::Relaxed);
+            log::write(&format!("web server also on port {SHORT_PORT}"));
+            let be: Arc<dyn Backend> = c2.clone();
+            server::serve(listener, be, assets(), PORT);
+        }
+        Err(e) => log::write(&format!("port {SHORT_PORT} not available ({e}); phone links keep the :{PORT} port")),
+    });
+    let m = mdns::start(&ctl.receiver.pc_name);
+    *ctl.mdns.lock().unwrap() = Some(m);
+    log::write("short name responder started");
+}
+
 /// Starts the web server (Wi-Fi link + control panel) on its own thread.
 pub fn start_server(ctl: Arc<Control>, lan: bool) {
     let _ = std::thread::Builder::new().name("airwand-server".into()).spawn(move || match server::bind(PORT, lan) {
@@ -141,17 +176,10 @@ pub fn start_server(ctl: Arc<Control>, lan: bool) {
             ctl.wifi_listening.store(true, Ordering::Relaxed);
             log::write(&format!("web server on port {PORT} ({})", if lan { "network" } else { "this PC only" }));
             let be: Arc<dyn Backend> = ctl.clone();
-            server::serve(
-                listener,
-                be,
-                Assets {
-                    phone: include_str!("../../../Web/index.html"),
-                    panel: include_str!("../../panel.html"),
-                    icon: include_bytes!("../../../Web/icon.png"),
-                    font: include_bytes!("../../../Web/Geist.woff2"),
-                    font_mono: include_bytes!("../../../Web/GeistMono.woff2"),
-                },
-            );
+            if lan {
+                start_lan_extras(&ctl);
+            }
+            server::serve(listener, be, assets(), PORT);
         }
         Err(e) => {
             let msg = format!("Could not start the Wi-Fi link and control panel on port {PORT}: {e}");
@@ -166,10 +194,16 @@ impl Backend for Control {
         let s = self.settings.lock().unwrap().clone();
         let ble_error = self.receiver.error.lock().unwrap().clone();
         let wifi_error = self.wifi_error.lock().unwrap().clone();
-        let urls: Vec<String> = if s.wifi_enabled {
-            server::lan_ips().iter().map(|ip| jstr(&format!("http://{ip}:{PORT}"))).collect()
-        } else {
-            Vec::new()
+        let short = self.short_port.load(Ordering::Relaxed);
+        let link = |host: &str| if short { format!("http://{host}") } else { format!("http://{host}:{PORT}") };
+        let urls: Vec<String> = if s.wifi_enabled { server::lan_ips().iter().map(|ip| jstr(&link(ip))).collect() } else { Vec::new() };
+        let (name, name_error) = match self.mdns.lock().unwrap().as_ref() {
+            Some(m) => (m.name.lock().unwrap().clone(), m.error.lock().unwrap().clone()),
+            None => (None, None),
+        };
+        let names: Vec<String> = match (&name, s.wifi_enabled) {
+            (Some(n), true) => vec![jstr(&link(n))],
+            _ => Vec::new(),
         };
         let peers: Vec<String> = self
             .receiver
@@ -208,7 +242,7 @@ impl Backend for Control {
             None => "null".to_string(),
         };
         format!(
-            "{{\"version\":{},\"pcName\":{},\"paused\":{},\"bluetooth\":{{\"advertising\":{},\"error\":{}}},\"wifi\":{{\"enabled\":{},\"listening\":{},\"port\":{},\"urls\":[{}],\"error\":{}}},\"peers\":[{}],\"trusted\":{},\"aimRate\":{},\"rejected\":{},\"settings\":{{\"range\":{},\"smooth\":{},\"invX\":{},\"invY\":{},\"predict\":{},\"encrypt\":{},\"wifi\":{},\"autostart\":{}}},\"window\":[{},{},{},{},{}],\"log\":[{}]}}",
+            "{{\"version\":{},\"pcName\":{},\"paused\":{},\"bluetooth\":{{\"advertising\":{},\"error\":{}}},\"wifi\":{{\"enabled\":{},\"listening\":{},\"port\":{},\"urls\":[{}],\"names\":[{}],\"short\":{},\"nameError\":{},\"error\":{}}},\"peers\":[{}],\"trusted\":{},\"aimRate\":{},\"rejected\":{},\"settings\":{{\"range\":{},\"smooth\":{},\"invX\":{},\"invY\":{},\"predict\":{},\"encrypt\":{},\"wifi\":{},\"autostart\":{}}},\"window\":[{},{},{},{},{}],\"log\":[{}]}}",
             jstr(env!("CARGO_PKG_VERSION")),
             jstr(&self.receiver.pc_name),
             self.paused.load(Ordering::Relaxed),
@@ -218,6 +252,9 @@ impl Backend for Control {
             self.wifi_listening.load(Ordering::Relaxed),
             PORT,
             urls.join(","),
+            names.join(","),
+            short,
+            opt(&name_error),
             opt(&wifi_error),
             peers.join(","),
             self.receiver.trusted_count(),

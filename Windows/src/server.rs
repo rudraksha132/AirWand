@@ -1,13 +1,15 @@
 //! Tiny local web server (standard library only). It serves
-//!   `/`            the phone page (same page as `Web/index.html`)
+//!   `/`            the phone page (same page as `Web/index.html`); on this PC it redirects to the panel
+//!   `/phone`       the phone page, always
 //!   `/ws`          the Wi-Fi link: WebSocket frames carry the same packets as the Bluetooth link
-//!   `/ui`, `/api`  the control panel, reachable from this PC only
+//!   `/ui`, `/api`  the control panel, reachable from this PC only (`/api/qr` draws a QR code as SVG)
 //! Everything else is a 404. The panel API refuses requests that did not come from this PC's own
 //! loopback address, that carry a wrong Host or Origin header, or that lack `X-AirWand: 1`
 //! (which a web page on another site cannot send without a CORS preflight we never answer).
 use crate::net::{self, FrameParse, Request};
+use crate::qr::Qr;
 use std::io::{self, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -26,6 +28,7 @@ pub trait Backend: Send + Sync + 'static {
     fn ws_close(&self, key: &str);
 }
 
+#[derive(Clone, Copy)]
 pub struct Assets {
     pub phone: &'static str,
     pub panel: &'static str,
@@ -44,8 +47,9 @@ pub fn bind(port: u16, lan: bool) -> io::Result<TcpListener> {
     TcpListener::bind(addr)
 }
 
-/// Blocks, serving connections, one thread each.
-pub fn serve(listener: TcpListener, backend: Arc<dyn Backend>, assets: Assets) {
+/// Blocks, serving connections, one thread each. `panel_port` is the port the control panel lives on
+/// (this listener may be another one, such as port 80, which only serves the phone page).
+pub fn serve(listener: TcpListener, backend: Arc<dyn Backend>, assets: Assets, panel_port: u16) {
     let assets: &'static Assets = Box::leak(Box::new(assets));
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
     let live = Arc::new(AtomicUsize::new(0));
@@ -59,7 +63,7 @@ pub fn serve(listener: TcpListener, backend: Arc<dyn Backend>, assets: Assets) {
         let be = backend.clone();
         let counter = live.clone();
         let spawned = std::thread::Builder::new().name("airwand-http".into()).spawn(move || {
-            handle(stream, &be, assets, port);
+            handle(stream, &be, assets, port, panel_port);
             counter.fetch_sub(1, Ordering::Relaxed);
         });
         if spawned.is_err() {
@@ -68,23 +72,39 @@ pub fn serve(listener: TcpListener, backend: Arc<dyn Backend>, assets: Assets) {
     }
 }
 
+/// The local address the OS would use to reach `peer` (connecting a UDP socket sends nothing).
+pub fn local_ip_for(peer: IpAddr) -> Option<Ipv4Addr> {
+    let s = UdpSocket::bind("0.0.0.0:0").ok()?;
+    s.connect((peer, 9)).ok()?;
+    match s.local_addr().ok()?.ip() {
+        IpAddr::V4(ip) if !ip.is_unspecified() && !ip.is_loopback() => Some(ip),
+        _ => None,
+    }
+}
+
 /// This PC's address on the local network (the route a packet to the internet would take; nothing is sent).
+pub fn lan_ipv4() -> Option<Ipv4Addr> {
+    local_ip_for(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)))
+}
+
 pub fn lan_ips() -> Vec<String> {
-    let probe = || -> Option<String> {
-        let s = UdpSocket::bind("0.0.0.0:0").ok()?;
-        s.connect("8.8.8.8:80").ok()?;
-        let ip = s.local_addr().ok()?.ip();
-        if ip.is_unspecified() || ip.is_loopback() {
-            None
-        } else {
-            Some(ip.to_string())
-        }
-    };
-    probe().into_iter().collect()
+    lan_ipv4().map(|ip| ip.to_string()).into_iter().collect()
 }
 
 fn reply(s: &mut TcpStream, status: &str, ctype: &str, body: &[u8], extra: &[(&str, &str)]) {
     let _ = s.write_all(&net::http_response(status, ctype, body, extra));
+}
+
+/// Host header names this PC itself: localhost or 127.0.0.1, with any port.
+fn host_is_loopback_name(req: &Request) -> bool {
+    match req.header("host") {
+        Some(h) => {
+            let h = h.to_ascii_lowercase();
+            let name = h.rsplit_once(':').map(|(n, _)| n).unwrap_or(&h);
+            name == "localhost" || name == "127.0.0.1"
+        }
+        None => false,
+    }
 }
 
 fn host_is_local(req: &Request, port: u16) -> bool {
@@ -113,7 +133,7 @@ const PANEL_HEADERS: [(&str, &str); 2] = [
     ("X-Frame-Options", "DENY"),
 ];
 
-fn handle(mut s: TcpStream, be: &Arc<dyn Backend>, assets: &'static Assets, port: u16) {
+fn handle(mut s: TcpStream, be: &Arc<dyn Backend>, assets: &'static Assets, port: u16, panel_port: u16) {
     let _ = s.set_read_timeout(Some(Duration::from_secs(10)));
     let _ = s.set_write_timeout(Some(Duration::from_secs(5)));
     let _ = s.set_nodelay(true);
@@ -144,7 +164,12 @@ fn handle(mut s: TcpStream, be: &Arc<dyn Backend>, assets: &'static Assets, port
     let is_ws = req.header("upgrade").map(|v| v.eq_ignore_ascii_case("websocket")).unwrap_or(false);
     match (req.method.as_str(), req.path.as_str()) {
         ("GET", "/ws") if is_ws => websocket(s, &req, rest, peer, be),
-        ("GET", "/") | ("GET", "/index.html") => {
+        // Typing localhost on this PC lands on the control panel; phones (and any other host name) get the phone page.
+        ("GET", "/") if local && host_is_loopback_name(&req) => {
+            let to = format!("http://localhost:{panel_port}/ui");
+            reply(&mut s, "302 Found", "text/plain", b"", &[("Location", &to)]);
+        }
+        ("GET", "/") | ("GET", "/index.html") | ("GET", "/phone") => {
             reply(&mut s, "200 OK", "text/html; charset=utf-8", assets.phone.as_bytes(), &[]);
         }
         ("GET", "/icon.png") => reply(&mut s, "200 OK", "image/png", assets.icon, &[]),
@@ -162,6 +187,17 @@ fn handle(mut s: TcpStream, be: &Arc<dyn Backend>, assets: &'static Assets, port
                 reply(&mut s, "200 OK", "application/json", be.state_json().as_bytes(), &[]);
             } else {
                 reply(&mut s, "403 Forbidden", "text/plain", b"forbidden", &[]);
+            }
+        }
+        ("GET", "/api/qr") => {
+            if !(local && host_is_local(&req, port)) {
+                reply(&mut s, "403 Forbidden", "text/plain", b"forbidden", &[]);
+                return;
+            }
+            let text = net::query_param(&req.query, "u").filter(|u| u.starts_with("http://") && u.len() <= 120 && u.bytes().all(|b| (0x21..0x7f).contains(&b)));
+            match text.and_then(|t| Qr::encode_best(t.as_bytes())) {
+                Some(q) => reply(&mut s, "200 OK", "image/svg+xml", q.to_svg(4).as_bytes(), &[]),
+                None => reply(&mut s, "400 Bad Request", "text/plain", b"bad link", &[]),
             }
         }
         ("POST", p) if p.starts_with("/api/") => {
@@ -304,7 +340,7 @@ mod tests {
         let port = l.local_addr().unwrap().port();
         let m = Arc::new(Mock::default());
         let be: Arc<dyn Backend> = m.clone();
-        std::thread::spawn(move || serve(l, be, Assets { phone: "PHONE", panel: "PANEL", icon: b"png", font: b"F1", font_mono: b"F2" }));
+        std::thread::spawn(move || serve(l, be, Assets { phone: "PHONE", panel: "PANEL", icon: b"png", font: b"F1", font_mono: b"F2" }, port));
         (port, m)
     }
 
@@ -340,7 +376,13 @@ mod tests {
     fn serves_pages_and_guards_the_panel() {
         let (p, _m) = start();
         let host = format!("127.0.0.1:{p}");
-        assert!(http(p, &format!("GET / HTTP/1.1\r\nHost: {host}\r\n\r\n")).ends_with("PHONE"));
+        // another host name (a phone, or the PC's LAN address) gets the phone page; localhost gets the panel
+        assert!(http(p, "GET / HTTP/1.1\r\nHost: 192.168.1.5\r\n\r\n").ends_with("PHONE"));
+        assert!(http(p, "GET / HTTP/1.1\r\nHost: airwand.local\r\n\r\n").ends_with("PHONE"));
+        assert!(http(p, &format!("GET /phone HTTP/1.1\r\nHost: {host}\r\n\r\n")).ends_with("PHONE"));
+        let r = http(p, &format!("GET / HTTP/1.1\r\nHost: localhost:{p}\r\n\r\n"));
+        assert!(r.starts_with("HTTP/1.1 302") && r.contains(&format!("Location: http://localhost:{p}/ui")));
+        assert!(http(p, "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n").starts_with("HTTP/1.1 302"));
         assert!(http(p, &format!("GET /ui HTTP/1.1\r\nHost: {host}\r\n\r\n")).ends_with("PANEL"));
         assert!(http(p, "GET /ui HTTP/1.1\r\nHost: evil.example:80\r\n\r\n").starts_with("HTTP/1.1 403"));
         assert!(http(p, "GET /api/state HTTP/1.1\r\nHost: evil.example\r\n\r\n").starts_with("HTTP/1.1 403"));
@@ -348,6 +390,35 @@ mod tests {
         assert!(http(p, &format!("GET /Geist.woff2 HTTP/1.1\r\nHost: {host}\r\n\r\n")).contains("font/woff2"));
         assert!(http(p, &format!("GET /GeistMono.woff2 HTTP/1.1\r\nHost: {host}\r\n\r\n")).ends_with("F2"));
         assert!(http(p, &format!("GET /nothing HTTP/1.1\r\nHost: {host}\r\n\r\n")).starts_with("HTTP/1.1 404"));
+    }
+
+    #[test]
+    fn qr_endpoint_draws_svg_for_this_pc_only() {
+        let (p, _m) = start();
+        let host = format!("127.0.0.1:{p}");
+        let ok = http(p, &format!("GET /api/qr?u=http%3A%2F%2Fairwand.local HTTP/1.1\r\nHost: {host}\r\n\r\n"));
+        assert!(ok.starts_with("HTTP/1.1 200") && ok.contains("image/svg+xml") && ok.contains("<path"));
+        assert!(http(p, "GET /api/qr?u=http%3A%2F%2Fa.b HTTP/1.1\r\nHost: evil.example\r\n\r\n").starts_with("HTTP/1.1 403"));
+        for bad in ["", "?u=", "?u=ftp%3A%2F%2Fx", "?u=javascript%3Aalert(1)", "?u=http%3A%2F%2Fa%20b", "?x=1"] {
+            assert!(http(p, &format!("GET /api/qr{bad} HTTP/1.1\r\nHost: {host}\r\n\r\n")).starts_with("HTTP/1.1 400"), "{bad}");
+        }
+        let long = format!("?u=http%3A%2F%2F{}", "a".repeat(130));
+        assert!(http(p, &format!("GET /api/qr{long} HTTP/1.1\r\nHost: {host}\r\n\r\n")).starts_with("HTTP/1.1 400"));
+    }
+
+    #[test]
+    fn a_second_listener_serves_the_phone_page_but_not_the_panel() {
+        // like port 80: the phone page and the Wi-Fi link, while the panel stays on its own port
+        let panel = start().0;
+        let l = bind(0, false).unwrap();
+        let p = l.local_addr().unwrap().port();
+        let be: Arc<dyn Backend> = Arc::new(Mock::default());
+        std::thread::spawn(move || serve(l, be, Assets { phone: "PHONE", panel: "PANEL", icon: b"png", font: b"F1", font_mono: b"F2" }, panel));
+        assert!(http(p, "GET /phone HTTP/1.1\r\nHost: airwand.local\r\n\r\n").ends_with("PHONE"));
+        assert!(http(p, "GET /ui HTTP/1.1\r\nHost: localhost\r\n\r\n").starts_with("HTTP/1.1 403"));
+        assert!(http(p, &format!("GET /ui HTTP/1.1\r\nHost: 127.0.0.1:{p}\r\n\r\n")).ends_with("PANEL")); // only with the exact port, never via the shared name
+        let r = http(p, "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        assert!(r.contains(&format!("Location: http://localhost:{panel}/ui")));
     }
 
     #[test]

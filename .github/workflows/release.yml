@@ -1,0 +1,108 @@
+name: Release
+# Builds the Windows app, wraps it in an installer, signs both when signing secrets exist, and publishes them.
+# Run it by pushing a tag such as v2.6.0, or by hand from the Actions tab.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      # Signing is optional. Set these repository secrets to turn it on (see docs/SIGNING.md):
+      # Azure Trusted Signing: AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET,
+      #   plus repository variables TS_ENDPOINT, TS_ACCOUNT, TS_PROFILE.
+      HAS_SIGNING: ${{ secrets.AZURE_TENANT_ID != '' && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_CLIENT_SECRET != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Version from Cargo.toml
+        id: ver
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path Windows/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches.Groups[1].Value
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Test
+        run: cargo test
+        working-directory: Windows
+
+      - name: Build
+        run: cargo build --release
+        working-directory: Windows
+
+      - name: Sign airwand.exe
+        if: env.HAS_SIGNING == 'true'
+        uses: azure/trusted-signing-action@v0.5.1
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.TS_ENDPOINT }}
+          trusted-signing-account-name: ${{ vars.TS_ACCOUNT }}
+          certificate-profile-name: ${{ vars.TS_PROFILE }}
+          files-folder: ${{ github.workspace }}\Windows\target\release
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Installer
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=${{ steps.ver.outputs.version }}" Windows\installer\AirWand.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+
+      - name: Sign installer
+        if: env.HAS_SIGNING == 'true'
+        uses: azure/trusted-signing-action@v0.5.1
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.TS_ENDPOINT }}
+          trusted-signing-account-name: ${{ vars.TS_ACCOUNT }}
+          certificate-profile-name: ${{ vars.TS_PROFILE }}
+          files-folder: ${{ github.workspace }}\Windows\dist
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Portable zip and checksums
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          $z = "Windows\dist\AirWand-$v-portable.zip"
+          Compress-Archive -Path Windows\target\release\airwand.exe, LICENSE -DestinationPath $z
+          Get-ChildItem Windows\dist\AirWand-* | ForEach-Object {
+            $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$h  $($_.Name)"
+          } | Set-Content Windows\dist\SHA256SUMS.txt
+          Get-Content Windows\dist\SHA256SUMS.txt
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            Windows/dist/AirWand-Setup-*.exe
+            Windows/dist/AirWand-*-portable.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: airwand-windows
+          path: Windows/dist/*
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Windows/dist/*
+          generate_release_notes: true

@@ -75,6 +75,10 @@
   #offline.show { display:flex; }
   #offline h2 { font-size:15px; font-weight:600; margin:0 0 6px; color:var(--fg); }
   .empty { padding:14px 0 8px; color:var(--dim); }
+  .linkbox { display:flex; gap:20px; align-items:flex-start; flex-wrap:wrap; margin-top:12px; }
+  .qr { width:176px; height:176px; border-radius:10px; border:1px solid var(--line); background:#fff; flex:none; image-rendering:pixelated; }
+  .linkinfo { flex:1; min-width:200px; display:flex; flex-direction:column; gap:10px; align-items:flex-start; }
+  .localurl { font:12px var(--mono); color:var(--dim); }
   .sr { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
 </style>
 </head>
@@ -94,11 +98,21 @@
       <div class="row">
         <div class="grow">
           <div><b>Wi-Fi</b> <span class="badge good">Primary</span> <span id="wifiBadge"></span></div>
-          <div class="muted" id="wifiHint">Phone and PC on the same Wi-Fi. Open this address in Chrome on the phone:</div>
-          <div id="urls" style="margin-top:8px"></div>
+          <div class="muted" id="wifiHint">Phone and PC on the same Wi-Fi. Scan the code with the phone camera, or type the address in Chrome:</div>
+          <div class="linkbox" id="linkBox" style="display:none">
+            <img id="qr" class="qr" width="176" height="176" alt="QR code with the phone link">
+            <div class="linkinfo">
+              <div class="seg" id="kind"><button data-k="name">Short name</button><button data-k="ip">IP address</button></div>
+              <div class="url" id="linkUrl"></div>
+              <div class="actions"><button id="copyLink">Copy link</button></div>
+              <div class="muted" id="kindHint"></div>
+            </div>
+          </div>
+          <div class="localurl" id="localUrl" style="margin-top:10px">This panel: http://localhost:47821</div>
           <details id="androidHelp" style="display:none">
             <summary>Android: one-time Chrome setting (needed for motion sensors)</summary>
-            <p>Chrome blocks motion sensors on pages that are not HTTPS. Open <b>chrome://flags/#unsafely-treat-insecure-origin-as-secure</b> on the phone, add <b id="origin">the address above</b>, set it to <b>Enabled</b> and tap <b>Relaunch</b>. Do this once.</p>
+            <p>Chrome blocks motion sensors on pages that are not HTTPS. Open <b>chrome://flags/#unsafely-treat-insecure-origin-as-secure</b> on the phone, add <b id="origin">the address above</b>, set it to <b>Enabled</b> and tap <b>Relaunch</b>. Do this once. The short name never changes, so this setting keeps working; an IP address can change and then needs the setting again.</p>
+            <p><button id="copyOrigin">Copy address for the setting</button></p>
             <p>The first time the PC's firewall may ask to allow AirWand on private networks. Allow it.</p>
           </details>
           <details>
@@ -207,24 +221,8 @@ function render(s) {
   const b = $('banner'); b.textContent = msgs.join(' '); b.classList.toggle('show', msgs.length > 0);
 
   // Wi-Fi
-  const u = $('urls'); u.textContent = '';
-  if (!s.settings.wifi) {
-    $('wifiHint').textContent = 'Wi-Fi is turned off. Switch on "Allow phones over Wi-Fi" and restart AirWand.';
-  } else if (!s.wifi.listening) {
-    $('wifiHint').textContent = s.wifi.error ? 'The Wi-Fi link could not start.' : 'Starting…';
-  } else if (!s.wifi.urls.length) {
-    $('wifiHint').textContent = 'No network address found. Connect this PC to Wi-Fi or Ethernet.';
-  } else {
-    $('wifiHint').textContent = 'Phone and PC on the same Wi-Fi. Open this address in Chrome on the phone:';
-    for (const url of s.wifi.urls) {
-      const r = el('div', 'actions'); r.style.alignItems = 'center';
-      r.append(el('span', 'url', url));
-      const c = el('button', null, 'Copy'); c.onclick = () => { navigator.clipboard && navigator.clipboard.writeText(url).then(() => { c.textContent = 'Copied'; setTimeout(() => c.textContent = 'Copy', 1200); }); };
-      r.append(c); u.append(r);
-    }
-    $('origin').textContent = s.wifi.urls[0];
-  }
-  $('androidHelp').style.display = s.wifi.urls.length && s.settings.wifi ? '' : 'none';
+  renderLink(s);
+  $('localUrl').textContent = 'This panel: http://localhost:' + s.wifi.port;
   $('wifiBadge').replaceChildren(...(s.wifi.listening && s.settings.wifi ? [Object.assign(el('span', 'badge good', 'Ready'))] : [el('span', 'badge warn', s.settings.wifi ? 'Not ready' : 'Off')]));
 
   // Bluetooth
@@ -272,6 +270,42 @@ function render(s) {
   const lg = $('log');
   lg.textContent = s.log.map(l => { const m = /^(\d+) (.*)$/.exec(l); return m ? new Date(m[1] * 1000).toLocaleTimeString() + '  ' + m[2] : l; }).join('\n') || '(empty)';
 }
+
+// The phone link: a QR code plus the address it holds, as a short name (airwand.local) or the IP address.
+let kind = 'name', shownLink = '';
+try { kind = localStorage.getItem('linkKind') || 'name'; } catch { /* storage may be blocked */ }
+function copyText(btn, text, label) {
+  if (!navigator.clipboard) return;
+  navigator.clipboard.writeText(text).then(() => { btn.textContent = 'Copied'; setTimeout(() => btn.textContent = label, 1200); });
+}
+function renderLink(s) {
+  const names = s.wifi.names, ips = s.wifi.urls, ready = s.settings.wifi && s.wifi.listening;
+  const hint = $('wifiHint'), box = $('linkBox');
+  if (!s.settings.wifi) hint.textContent = 'Wi-Fi is turned off. Switch on "Allow phones over Wi-Fi" and restart AirWand.';
+  else if (!s.wifi.listening) hint.textContent = s.wifi.error ? 'The Wi-Fi link could not start.' : 'Starting…';
+  else if (!ips.length && !names.length) hint.textContent = 'No network address found. Connect this PC to Wi-Fi or Ethernet.';
+  else hint.textContent = 'Phone and PC on the same Wi-Fi. Scan the code with the phone camera, or type the address in Chrome:';
+  const have = { name: names[0], ip: ips[0] };
+  if (!ready || (!have.name && !have.ip)) { box.style.display = 'none'; $('androidHelp').style.display = 'none'; shownLink = ''; return; }
+  let k = have[kind] ? kind : (have.name ? 'name' : 'ip');
+  const url = have[k];
+  box.style.display = '';
+  for (const b of $('kind').children) { b.classList.toggle('sel', b.dataset.k === k); b.disabled = !have[b.dataset.k]; }
+  $('linkUrl').textContent = url;
+  $('kindHint').textContent = k === 'name'
+    ? 'Stays the same when the PC address changes. Works on iPhone and Android 12 or newer. If it does not open, use the IP address.'
+    : 'Works on every phone, but changes if the router gives this PC a new address.' + (s.wifi.nameError ? ' ' + s.wifi.nameError : '');
+  if (url !== shownLink) { shownLink = url; $('qr').src = '/api/qr?u=' + encodeURIComponent(url); }
+  $('origin').textContent = url;
+  $('androidHelp').style.display = '';
+  $('copyLink').onclick = () => copyText($('copyLink'), url, 'Copy link');
+  $('copyOrigin').onclick = () => copyText($('copyOrigin'), url, 'Copy address for the setting');
+}
+$('kind').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b || b.disabled) return;
+  kind = b.dataset.k; try { localStorage.setItem('linkKind', kind); } catch { /* ignore */ }
+  if (st) renderLink(st);
+});
 
 async function refresh() {
   if (closed) return;

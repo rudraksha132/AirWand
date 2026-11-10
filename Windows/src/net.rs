@@ -90,7 +90,39 @@ pub fn jstr(s: &str) -> String {
 pub struct Request {
     pub method: String,
     pub path: String,
+    /// Raw query string, without the `?`.
+    pub query: String,
     pub headers: Vec<(String, String)>,
+}
+
+/// `%XX` and `+` decoding. Returns None for broken escapes or invalid UTF-8.
+pub fn percent_decode(s: &str) -> Option<String> {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'%' => {
+                let h = std::str::from_utf8(b.get(i + 1..i + 3)?).ok()?;
+                out.push(u8::from_str_radix(h, 16).ok()?);
+                i += 3;
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// Value of one query parameter, decoded.
+pub fn query_param(query: &str, key: &str) -> Option<String> {
+    query.split('&').filter_map(|kv| kv.split_once('=')).find(|(k, _)| *k == key).and_then(|(_, v)| percent_decode(v))
 }
 
 impl Request {
@@ -115,7 +147,10 @@ pub fn parse_head(head: &str) -> Option<Request> {
     if !version.starts_with("HTTP/1.") || it.next().is_some() || method.is_empty() {
         return None;
     }
-    let path = target.split('?').next().unwrap_or("/").to_string();
+    let (path, query) = match target.split_once('?') {
+        Some((p, q)) => (p.to_string(), q.to_string()),
+        None => (target.to_string(), String::new()),
+    };
     let mut headers = Vec::new();
     for l in lines {
         if l.is_empty() {
@@ -127,7 +162,7 @@ pub fn parse_head(head: &str) -> Option<Request> {
             return None;
         }
     }
-    Some(Request { method, path, headers })
+    Some(Request { method, path, query, headers })
 }
 
 pub fn http_response(status: &str, ctype: &str, body: &[u8], extra: &[(&str, &str)]) -> Vec<u8> {
@@ -271,11 +306,23 @@ mod tests {
         let r = parse_head("GET /ws?x=1 HTTP/1.1\r\nHost: 192.168.1.5:47821\r\nUpgrade: websocket\r\n\r\n").unwrap();
         assert_eq!(r.method, "GET");
         assert_eq!(r.path, "/ws");
+        assert_eq!(r.query, "x=1");
         assert_eq!(r.header("host"), Some("192.168.1.5:47821"));
         assert_eq!(r.header("upgrade"), Some("websocket"));
         assert!(parse_head("garbage").is_none());
         assert!(parse_head("GET / HTTP/1.1 extra\r\n\r\n").is_none());
         assert!(parse_head("GET / FTP\r\n\r\n").is_none());
+    }
+
+    #[test]
+    fn decodes_query_values() {
+        assert_eq!(percent_decode("http%3A%2F%2Fa.b%3A1").as_deref(), Some("http://a.b:1"));
+        assert_eq!(percent_decode("a+b").as_deref(), Some("a b"));
+        assert_eq!(percent_decode("%zz"), None);
+        assert_eq!(percent_decode("%4"), None);
+        assert_eq!(percent_decode("%ff"), None);
+        assert_eq!(query_param("x=1&u=http%3A%2F%2Fa", "u").as_deref(), Some("http://a"));
+        assert_eq!(query_param("x=1", "u"), None);
     }
 
     #[test]
