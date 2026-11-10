@@ -111,8 +111,8 @@
           <div class="localurl" id="localUrl" style="margin-top:10px">This panel: http://localhost:47821</div>
           <details id="androidHelp" style="display:none">
             <summary>Android: one-time Chrome setting (needed for motion sensors)</summary>
-            <p>Chrome blocks motion sensors on pages that are not HTTPS. Open <b>chrome://flags/#unsafely-treat-insecure-origin-as-secure</b> on the phone, add <b id="origin">the address above</b>, set it to <b>Enabled</b> and tap <b>Relaunch</b>. Do this once. The short name never changes, so this setting keeps working; an IP address can change and then needs the setting again.</p>
-            <p><button id="copyOrigin">Copy address for the setting</button></p>
+            <p>Chrome blocks motion sensors on pages that are not HTTPS. Open <b>chrome://flags/#unsafely-treat-insecure-origin-as-secure</b> on the phone, paste <b id="origin" style="word-break:break-all">the addresses</b> (separated by commas, copy them with the button below), set it to <b>Enabled</b> and tap <b>Relaunch</b>. The address must match exactly, port included, so all variants are listed. If the PC's IP address changes, add the new one; the short name never changes.</p>
+            <p><button id="copyOrigin">Copy all addresses for the setting</button></p>
             <p>The first time the PC's firewall may ask to allow AirWand on private networks. Allow it.</p>
           </details>
           <details>
@@ -296,10 +296,15 @@ function renderLink(s) {
     ? 'Stays the same when the PC address changes. Works on iPhone and Android 12 or newer. If it does not open, use the IP address.'
     : 'Works on every phone, but changes if the router gives this PC a new address.' + (s.wifi.nameError ? ' ' + s.wifi.nameError : '');
   if (url !== shownLink) { shownLink = url; $('qr').src = '/api/qr?u=' + encodeURIComponent(url); }
-  $('origin').textContent = url;
+  // Chrome compares the flag with the exact origin, port included, so list every way the phone could open the page.
+  const origins = [];
+  for (const u of [...names, ...ips]) { origins.push(u); if (s.wifi.short) origins.push(u + ':' + s.wifi.port); }
+  const flag = origins.join(',');
+  $('origin').textContent = flag;
   $('androidHelp').style.display = '';
+  $('androidHelp').open = true;
   $('copyLink').onclick = () => copyText($('copyLink'), url, 'Copy link');
-  $('copyOrigin').onclick = () => copyText($('copyOrigin'), url, 'Copy address for the setting');
+  $('copyOrigin').onclick = () => copyText($('copyOrigin'), flag, 'Copy all addresses for the setting');
 }
 $('kind').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b || b.disabled) return;

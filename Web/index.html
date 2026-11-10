@@ -389,7 +389,7 @@ async function sensorPermission() {
 }
 function startSensors() {
   if (sensing) return; sensing = true; lastT = null; gotMotion = false;
-  setTimeout(() => { if (sensing && !gotMotion) msg('No motion data from this browser. If the address starts with http://, see the setup note on the first screen.'); }, 3000);
+  setTimeout(() => { if (sensing && !gotMotion) msg('No motion data. Chrome blocks motion sensors on http pages. In Chrome open chrome://flags/#unsafely-treat-insecure-origin-as-secure, add exactly ' + location.origin + ' , choose Enabled, tap Relaunch, then open this page again.'); }, 3000);
   addEventListener('deviceorientation', onOrient);
   addEventListener('devicemotion', onMotion);
 }
