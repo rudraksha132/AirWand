@@ -13,12 +13,14 @@ pub struct Settings {
     pub predict: bool,
     /// Require an encrypted (OS-paired) Bluetooth link. Needs a restart.
     pub require_encryption: bool,
+    /// Let phones connect over Wi-Fi (the web server listens on the network, not just this PC). Needs a restart.
+    pub wifi_enabled: bool,
     pub trusted: Vec<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { range_idx: 1, smooth_idx: 0, inv_x: false, inv_y: false, predict: true, require_encryption: false, trusted: vec![] }
+        Self { range_idx: 1, smooth_idx: 0, inv_x: false, inv_y: false, predict: true, require_encryption: false, wifi_enabled: true, trusted: vec![] }
     }
 }
 

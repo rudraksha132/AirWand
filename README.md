@@ -73,6 +73,15 @@ This repo also has a Windows receiver (`Windows/`, Rust) and a phone web page (`
 - **Pairing**: open the page, tap *Connect to PC*, pick your PC. The page shows a 6-digit code and the PC shows one in its Allow dialog. Click **Allow** only if they match.
 - Web BLE writes are limited to about 20 bytes and roughly one per connection interval, so expect 30 to 60 aim updates a second; the receiver still eases at 240 Hz. The page learns and removes gyro bias while the phone is still, to reduce yaw drift.
 
+### Control panel and Wi-Fi link (v0.2)
+
+- **Control panel.** Starting `airwand.exe` (or double-clicking it again, or left-clicking the tray icon) opens a window with connection status, the address for your phone, paired devices with their pairing code, pause/center, speed, smoothing, invert, start-with-Windows, security switches and the log. It runs in Edge or Chrome app mode and is only reachable from this PC.
+- **Wi-Fi link.** The PC also serves the phone page on `http://<PC address>:47821` and talks to it over a WebSocket, using the same packets, pairing code and Allow prompt as Bluetooth. It needs no Bluetooth peripheral support, so it works on adapters that cannot be a BLE peripheral. Windows Firewall may ask to allow AirWand on private networks; allow it.
+- **Which is used.** Wi-Fi is tried first (lower latency, more updates per second), Bluetooth is the backup. If the same phone is live over both, the PC uses Wi-Fi.
+- **Android setting.** Chrome blocks motion sensors on `http://` pages, so once: open `chrome://flags/#unsafely-treat-insecure-origin-as-secure` on the phone, add the address shown in the panel, set Enabled, Relaunch. iPhone Safari needs HTTPS for motion sensors, so on iPhone use the native app or Bluefy over Bluetooth.
+- **Security.** The Wi-Fi link has the same trust model as plain Bluetooth: pairing needs your approval on the PC, but the device ID travels unencrypted, so only use it on a network you trust. "Allow phones over Wi-Fi" off keeps the server on this PC only. The panel API refuses requests from other machines, wrong Host or Origin headers, and requests without the `X-AirWand` header.
+- **Tests.** `cargo test --lib` also covers the web server (routes, WebSocket handshake and framing, origin and host checks).
+
 ### Speed
 
 - The page sends the previous and newest aim sample together (`aimpair`, 18 bytes), so a late Bluetooth write no longer drops a sample; the PC drops duplicates by timestamp.

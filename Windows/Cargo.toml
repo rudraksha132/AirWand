@@ -1,6 +1,6 @@
 [package]
 name = "airwand"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Point your phone at your PC and the cursor follows (Bluetooth)"
 

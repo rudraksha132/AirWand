@@ -19,6 +19,7 @@ use windows::Devices::Bluetooth::{BluetoothAdapter, BluetoothError};
 use windows::Foundation::TypedEventHandler;
 use windows::Storage::Streams::{DataReader, DataWriter, IBuffer};
 use windows::core::IInspectable;
+use airwand::server::Sink;
 
 /// WinRT GATT objects are agile (free-threaded); this lets us keep them in shared state.
 struct Agile<T>(T);
@@ -53,6 +54,18 @@ impl Peer {
     }
 }
 
+/// What the control panel shows for one connected device.
+pub struct PeerInfo {
+    pub name: String,
+    pub model: String,
+    pub battery: Option<u8>,
+    pub state: LinkState,
+    pub paused: bool,
+    pub wifi: bool,
+    pub seen_ms: u64,
+    pub code: String,
+}
+
 #[derive(Default)]
 struct Inner {
     peers: HashMap<String, Peer>,
@@ -72,6 +85,7 @@ pub struct Receiver {
     on_event: EventFn,
     ask: AskFn,
     status: Mutex<Option<Agile<GattLocalCharacteristic>>>,
+    wifi: Mutex<HashMap<String, Sink>>,
     provider: Mutex<Option<Agile<GattServiceProvider>>>,
     pub error: Mutex<Option<String>>,
     pub advertising: AtomicBool,
@@ -108,6 +122,7 @@ impl Receiver {
             on_event,
             ask,
             status: Mutex::new(None),
+            wifi: Mutex::new(HashMap::new()),
             provider: Mutex::new(None),
             error: Mutex::new(None),
             advertising: AtomicBool::new(false),
@@ -363,6 +378,10 @@ impl Receiver {
                 if !approved {
                     return;
                 }
+                // Wi-Fi is faster than Bluetooth: while the same device is also live over Wi-Fi, ignore its Bluetooth input.
+                if !key.starts_with("wifi:") && self.wifi_preferred(key) {
+                    return;
+                }
                 let mut paused = paused;
                 for ev in events {
                     match ev {
@@ -473,6 +492,13 @@ impl Receiver {
     }
 
     fn send_status(&self, key: &str) {
+        if key.starts_with("wifi:") {
+            let sink = self.wifi.lock().unwrap().get(key).cloned();
+            if let Some(send) = sink {
+                send(&self.status_data(key));
+            }
+            return;
+        }
         let ch = self.status.lock().unwrap().as_ref().map(|a| a.0.clone());
         let Some(ch) = ch else { return };
         let Ok(buf) = make_buffer(&self.status_data(key)) else { return };
@@ -490,6 +516,75 @@ impl Receiver {
         for k in keys {
             self.send_status(&k);
         }
+    }
+
+    /// True when the device behind this Bluetooth key is also approved and active over Wi-Fi.
+    fn wifi_preferred(&self, key: &str) -> bool {
+        let inner = self.inner.lock().unwrap();
+        let Some(id) = inner.peers.get(key).and_then(|p| p.device_id.clone()) else { return false };
+        inner.peers.iter().any(|(k, p)| {
+            k.starts_with("wifi:")
+                && p.state == LinkState::Approved
+                && p.device_id.as_deref() == Some(id.as_str())
+                && p.last_seen.elapsed() < Duration::from_secs(2)
+        })
+    }
+
+    // Wi-Fi link (called by the web server)
+
+    /// A phone opened the Wi-Fi link. False = refuse (too many devices).
+    pub fn wifi_connect(self: &Arc<Self>, key: &str, send: Sink) -> bool {
+        {
+            let mut inner = self.inner.lock().unwrap();
+            if inner.peers.len() >= 8 {
+                drop(inner);
+                self.reject("too many peers");
+                return false;
+            }
+            inner.peers.insert(key.to_string(), Peer::new());
+        }
+        self.wifi.lock().unwrap().insert(key.to_string(), send);
+        self.send_status(key);
+        true
+    }
+
+    pub fn wifi_packet(self: &Arc<Self>, key: &str, data: &[u8]) {
+        self.handle(key, data);
+    }
+
+    pub fn wifi_disconnect(&self, key: &str) {
+        self.wifi.lock().unwrap().remove(key);
+        let mut inner = self.inner.lock().unwrap();
+        inner.peers.remove(key);
+        inner.asking.remove(key);
+    }
+
+    /// Devices that have introduced themselves, for the control panel.
+    pub fn peer_infos(&self) -> Vec<PeerInfo> {
+        let inner = self.inner.lock().unwrap();
+        let mut v: Vec<PeerInfo> = inner
+            .peers
+            .iter()
+            .filter_map(|(k, p)| {
+                let id = p.device_id.as_ref()?;
+                Some(PeerInfo {
+                    name: p.name.clone(),
+                    model: p.model.clone(),
+                    battery: p.battery,
+                    state: p.state,
+                    paused: p.paused,
+                    wifi: k.starts_with("wifi:"),
+                    seen_ms: p.last_seen.elapsed().as_millis() as u64,
+                    code: validate::code(id),
+                })
+            })
+            .collect();
+        v.sort_by_key(|p| p.seen_ms);
+        v
+    }
+
+    pub fn trusted_count(&self) -> usize {
+        self.settings.lock().unwrap().trusted.len()
     }
 
     // queries / actions for the tray

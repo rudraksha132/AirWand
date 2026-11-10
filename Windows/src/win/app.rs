@@ -1,4 +1,5 @@
 //! Tray icon, menu and message loop.
+use super::control::{self, Control};
 use super::controller::{Controller, RANGES, RANGE_NAMES, SMOOTH_NAMES};
 use super::engine::Engine;
 use super::receiver::Receiver;
@@ -18,7 +19,6 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-static GAME_HTML: &[u8] = include_bytes!("../../game.html");
 const WM_TRAY: u32 = WM_APP + 1;
 
 struct App {
@@ -26,6 +26,7 @@ struct App {
     engine: Arc<Engine>,
     receiver: Arc<Receiver>,
     ctrl: Arc<Controller>,
+    ctl: Arc<Control>,
     paused: Arc<AtomicBool>,
     aim_rate: AtomicU64,
     last_aims: AtomicU64,
@@ -57,6 +58,8 @@ pub fn run() -> Result<()> {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let _mutex = CreateMutexW(None, true, windows::core::w!("AirWand.SingleInstance"))?;
         if GetLastError() == ERROR_ALREADY_EXISTS {
+            // Already running: starting the program again just brings up the control panel.
+            control::open_panel();
             return Ok(());
         }
         native::tune_process();
@@ -81,11 +84,22 @@ pub fn run() -> Result<()> {
         let r2 = receiver.clone();
         std::thread::spawn(move || r2.start());
 
+        let ctl = Control::new(settings.clone(), receiver.clone(), ctrl.clone(), engine.clone(), paused.clone());
+        let lan = settings.lock().unwrap().wifi_enabled;
+        control::start_server(ctl.clone(), lan);
+        if !std::env::args().any(|a| a == "--background") {
+            std::thread::spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(700));
+                control::open_panel();
+            });
+        }
+
         let _ = APP.set(App {
             settings,
             engine,
             receiver,
             ctrl,
+            ctl,
             paused,
             aim_rate: AtomicU64::new(0),
             last_aims: AtomicU64::new(0),
@@ -171,13 +185,21 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
     match msg {
         WM_TRAY => {
             let ev = (lp.0 as u32) & 0xFFFF;
-            if ev == WM_RBUTTONUP || ev == WM_LBUTTONUP || ev == WM_CONTEXTMENU {
+            if ev == WM_LBUTTONUP {
+                control::open_panel();
+            } else if ev == WM_RBUTTONUP || ev == WM_CONTEXTMENU {
                 show_menu(hwnd);
             }
             LRESULT(0)
         }
         WM_TIMER => {
             if let Some(a) = APP.get() {
+                if a.ctl.quit_requested() {
+                    let nid = tray_data(hwnd, NIF_ICON, "");
+                    let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
+                    PostQuitMessage(0);
+                    return LRESULT(0);
+                }
                 let n = a.receiver.aims();
                 let prev = a.last_aims.swap(n, Ordering::Relaxed);
                 a.aim_rate.store(n.saturating_sub(prev), Ordering::Relaxed);
@@ -207,6 +229,7 @@ const ID_FORGET: usize = 33;
 const ID_ENCRYPT: usize = 34;
 const ID_LOG: usize = 35;
 const ID_GAME: usize = 36;
+const ID_PANEL: usize = 37;
 const ID_QUIT: usize = 99;
 
 unsafe fn add(menu: HMENU, id: usize, text: &str, checked: bool, enabled: bool) {
@@ -245,6 +268,8 @@ unsafe fn show_menu(hwnd: HWND) {
         (None, None) if a.receiver.advertising.load(Ordering::Relaxed) => "No device connected".to_string(),
         _ => "Bluetooth is starting\u{2026}".to_string(),
     };
+    add(menu, ID_PANEL, "Open control panel", false, true);
+    sep(menu);
     add(menu, 0, &line, false, false);
     if let Some(e) = &err {
         add(menu, 0, e, false, false);
@@ -329,12 +354,8 @@ unsafe fn command(a: &App, id: usize, hwnd: HWND) {
         ID_ENCRYPT => save(&|s| s.require_encryption = !s.require_encryption),
         ID_FORGET => a.receiver.forget_all(),
         ID_LOG => open_path(&log::path()),
-        ID_GAME => {
-            let p = std::env::temp_dir().join("airwand-game.html");
-            if std::fs::write(&p, GAME_HTML).is_ok() {
-                open_path(&p);
-            }
-        }
+        ID_GAME => control::open_game(),
+        ID_PANEL => control::open_panel(),
         ID_QUIT => {
             let nid = tray_data(hwnd, NIF_ICON, "");
             let _ = Shell_NotifyIconW(NIM_DELETE, &nid);

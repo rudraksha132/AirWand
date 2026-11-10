@@ -1,5 +1,6 @@
 //! Windows shell: Bluetooth GATT server, cursor control, tray icon.
 pub mod app;
+pub mod control;
 pub mod controller;
 pub mod engine;
 pub mod log;
