@@ -1,8 +1,8 @@
 [package]
 name = "airwand"
-version = "0.3.0"
+version = "2.5.0"
 edition = "2021"
-description = "Point your phone at your PC and the cursor follows (Bluetooth)"
+description = "Point your phone at your PC and the cursor follows (Wi-Fi and Bluetooth)"
 
 [lib]
 name = "airwand"
@@ -30,6 +30,7 @@ features = [
   "Win32_Media",
   "Win32_Security",
   "Win32_System_LibraryLoader",
+  "Win32_System_Registry",
   "Win32_System_Threading",
   "Win32_UI_HiDpi",
   "Win32_UI_Input_KeyboardAndMouse",

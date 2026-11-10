@@ -30,6 +30,9 @@ pub struct Assets {
     pub phone: &'static str,
     pub panel: &'static str,
     pub icon: &'static [u8],
+    /// Geist and Geist Mono (SIL OFL), latin subset, served as /Geist.woff2 and /GeistMono.woff2.
+    pub font: &'static [u8],
+    pub font_mono: &'static [u8],
 }
 
 const MAX_CONNECTIONS: usize = 24;
@@ -103,6 +106,8 @@ fn origin_ok(req: &Request) -> bool {
     }
 }
 
+const FONT_CACHE: [(&str, &str); 1] = [("Cache-Control", "public, max-age=31536000, immutable")];
+
 const PANEL_HEADERS: [(&str, &str); 2] = [
     ("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'"),
     ("X-Frame-Options", "DENY"),
@@ -143,6 +148,8 @@ fn handle(mut s: TcpStream, be: &Arc<dyn Backend>, assets: &'static Assets, port
             reply(&mut s, "200 OK", "text/html; charset=utf-8", assets.phone.as_bytes(), &[]);
         }
         ("GET", "/icon.png") => reply(&mut s, "200 OK", "image/png", assets.icon, &[]),
+        ("GET", "/Geist.woff2") => reply(&mut s, "200 OK", "font/woff2", assets.font, &FONT_CACHE),
+        ("GET", "/GeistMono.woff2") => reply(&mut s, "200 OK", "font/woff2", assets.font_mono, &FONT_CACHE),
         ("GET", "/ui") => {
             if local && host_is_local(&req, port) {
                 reply(&mut s, "200 OK", "text/html; charset=utf-8", assets.panel.as_bytes(), &PANEL_HEADERS);
@@ -297,7 +304,7 @@ mod tests {
         let port = l.local_addr().unwrap().port();
         let m = Arc::new(Mock::default());
         let be: Arc<dyn Backend> = m.clone();
-        std::thread::spawn(move || serve(l, be, Assets { phone: "PHONE", panel: "PANEL", icon: b"png" }));
+        std::thread::spawn(move || serve(l, be, Assets { phone: "PHONE", panel: "PANEL", icon: b"png", font: b"F1", font_mono: b"F2" }));
         (port, m)
     }
 
@@ -338,6 +345,8 @@ mod tests {
         assert!(http(p, "GET /ui HTTP/1.1\r\nHost: evil.example:80\r\n\r\n").starts_with("HTTP/1.1 403"));
         assert!(http(p, "GET /api/state HTTP/1.1\r\nHost: evil.example\r\n\r\n").starts_with("HTTP/1.1 403"));
         assert!(http(p, &format!("GET /api/state HTTP/1.1\r\nHost: {host}\r\n\r\n")).ends_with("{\"ok\":1}"));
+        assert!(http(p, &format!("GET /Geist.woff2 HTTP/1.1\r\nHost: {host}\r\n\r\n")).contains("font/woff2"));
+        assert!(http(p, &format!("GET /GeistMono.woff2 HTTP/1.1\r\nHost: {host}\r\n\r\n")).ends_with("F2"));
         assert!(http(p, &format!("GET /nothing HTTP/1.1\r\nHost: {host}\r\n\r\n")).starts_with("HTTP/1.1 404"));
     }
 

@@ -7,7 +7,6 @@ use super::settings::Settings;
 use airwand::net::jstr;
 use airwand::protocol::LinkState;
 use airwand::server::{self, Assets, Backend, Sink};
-use std::os::windows::process::CommandExt;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -15,8 +14,6 @@ use std::time::Instant;
 
 pub const PORT: u16 = 47821;
 pub static GAME_HTML: &[u8] = include_bytes!("../../game.html");
-const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
-const NO_WINDOW: u32 = 0x0800_0000;
 
 pub struct Control {
     settings: Arc<Mutex<Settings>>,
@@ -94,31 +91,21 @@ fn log_tail(n: usize) -> Vec<String> {
 }
 
 fn query_autostart() -> bool {
-    Command::new("reg")
-        .args(["query", RUN_KEY, "/v", "AirWand"])
-        .creation_flags(NO_WINDOW)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    super::autostart::is_on()
 }
 
 fn set_autostart(on: bool) -> bool {
-    let mut c = Command::new("reg");
-    if on {
-        let Ok(exe) = std::env::current_exe() else { return false };
-        let data = format!("\"{}\" --background", exe.display());
-        c.args(["add", RUN_KEY, "/v", "AirWand", "/t", "REG_SZ", "/d", data.as_str(), "/f"]);
-        c.creation_flags(NO_WINDOW).status().map(|s| s.success()).unwrap_or(false)
-    } else {
-        c.args(["delete", RUN_KEY, "/v", "AirWand", "/f"]);
-        let _ = c.creation_flags(NO_WINDOW).status();
-        true
-    }
+    super::autostart::set(on)
 }
 
 /// Opens the control panel in its own window (Edge or Chrome app mode), else the default browser.
 pub fn open_panel() {
     let url = format!("http://127.0.0.1:{PORT}/ui");
+    // Open at the size and place the user left it in.
+    let s = Settings::load();
+    let (w, h) = if s.win_w >= 480 && s.win_h >= 360 { (s.win_w, s.win_h) } else { (1040, 820) };
+    let size = format!("--window-size={w},{h}");
+    let pos = if s.win_pos { Some(format!("--window-position={},{}", s.win_x, s.win_y)) } else { None };
     let browsers = [
         r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
         r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
@@ -126,10 +113,15 @@ pub fn open_panel() {
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
     ];
     for b in browsers {
-        if std::path::Path::new(b).exists()
-            && Command::new(b).arg(format!("--app={url}")).arg("--window-size=1040,820").spawn().is_ok()
-        {
-            return;
+        if std::path::Path::new(b).exists() {
+            let mut c = Command::new(b);
+            c.arg(format!("--app={url}")).arg(&size);
+            if let Some(p) = &pos {
+                c.arg(p);
+            }
+            if c.spawn().is_ok() {
+                return;
+            }
         }
     }
     let _ = Command::new("explorer").arg(&url).spawn();
@@ -156,6 +148,8 @@ pub fn start_server(ctl: Arc<Control>, lan: bool) {
                     phone: include_str!("../../../Web/index.html"),
                     panel: include_str!("../../panel.html"),
                     icon: include_bytes!("../../../Web/icon.png"),
+                    font: include_bytes!("../../../Web/Geist.woff2"),
+                    font_mono: include_bytes!("../../../Web/GeistMono.woff2"),
                 },
             );
         }
@@ -214,7 +208,7 @@ impl Backend for Control {
             None => "null".to_string(),
         };
         format!(
-            "{{\"version\":{},\"pcName\":{},\"paused\":{},\"bluetooth\":{{\"advertising\":{},\"error\":{}}},\"wifi\":{{\"enabled\":{},\"listening\":{},\"port\":{},\"urls\":[{}],\"error\":{}}},\"peers\":[{}],\"trusted\":{},\"aimRate\":{},\"rejected\":{},\"settings\":{{\"range\":{},\"smooth\":{},\"invX\":{},\"invY\":{},\"predict\":{},\"encrypt\":{},\"wifi\":{},\"autostart\":{}}},\"log\":[{}]}}",
+            "{{\"version\":{},\"pcName\":{},\"paused\":{},\"bluetooth\":{{\"advertising\":{},\"error\":{}}},\"wifi\":{{\"enabled\":{},\"listening\":{},\"port\":{},\"urls\":[{}],\"error\":{}}},\"peers\":[{}],\"trusted\":{},\"aimRate\":{},\"rejected\":{},\"settings\":{{\"range\":{},\"smooth\":{},\"invX\":{},\"invY\":{},\"predict\":{},\"encrypt\":{},\"wifi\":{},\"autostart\":{}}},\"window\":[{},{},{},{},{}],\"log\":[{}]}}",
             jstr(env!("CARGO_PKG_VERSION")),
             jstr(&self.receiver.pc_name),
             self.paused.load(Ordering::Relaxed),
@@ -237,6 +231,11 @@ impl Backend for Control {
             s.require_encryption,
             s.wifi_enabled,
             self.autostart.load(Ordering::Relaxed),
+            s.win_w,
+            s.win_h,
+            s.win_x,
+            s.win_y,
+            s.win_pos,
             log_lines.join(",")
         )
     }
@@ -274,6 +273,18 @@ impl Backend for Control {
                 } else {
                     return Err("Could not change the startup setting.".to_string());
                 }
+            }
+            "window" => {
+                let (w, h, pos) = airwand::validate::window(value).ok_or("bad window size")?;
+                self.save(|s| {
+                    s.win_w = w;
+                    s.win_h = h;
+                    if let Some((x, y)) = pos {
+                        s.win_x = x;
+                        s.win_y = y;
+                        s.win_pos = true;
+                    }
+                });
             }
             "forget" => self.receiver.forget_all(),
             "game" => open_game(),

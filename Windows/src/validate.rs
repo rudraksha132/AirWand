@@ -1,6 +1,19 @@
 //! Strict checks for everything that arrives over Bluetooth.
 use sha2::{Digest, Sha256};
 
+/// Control-panel window bounds "w,h,x,y" (CSS pixels from the panel page).
+/// Returns (width, height, position). The position is None when it is nonsense,
+/// e.g. the (-32000, -32000) Windows reports for a minimised window.
+pub fn window(value: &str) -> Option<(u32, u32, Option<(i32, i32)>)> {
+    let v: Vec<i64> = value.split(',').map(|p| p.trim().parse().ok()).collect::<Option<Vec<i64>>>()?;
+    if v.len() != 4 || !(480..=10000).contains(&v[0]) || !(360..=10000).contains(&v[1]) {
+        return None;
+    }
+    let sane = |n: i64| (-4000..=20000).contains(&n);
+    let pos = if sane(v[2]) && sane(v[3]) { Some((v[2] as i32, v[3] as i32)) } else { None };
+    Some((v[0] as u32, v[1] as u32, pos))
+}
+
 pub fn ok(v: f64, limit: f64) -> bool {
     v.is_finite() && v.abs() <= limit
 }
@@ -42,6 +55,17 @@ pub fn code(device_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_bounds() {
+        assert_eq!(window("1040,820,100,50"), Some((1040, 820, Some((100, 50)))));
+        assert_eq!(window(" 900 , 700 , -20 , 5 "), Some((900, 700, Some((-20, 5)))));
+        assert_eq!(window("900,700,-32000,-32000"), Some((900, 700, None))); // minimised
+        assert_eq!(window("100,700,0,0"), None); // too small
+        assert_eq!(window("900,700,0"), None);
+        assert_eq!(window("a,b,c,d"), None);
+        assert_eq!(window("99999,700,0,0"), None);
+    }
 
     #[test]
     fn rejects_bad_floats() {
