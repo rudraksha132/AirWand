@@ -197,7 +197,11 @@ impl Backend for Control {
                     jstr(&p.model),
                     battery,
                     state,
-                    if p.wifi { "wifi" } else { "bluetooth" },
+                    match (p.wifi, p.ble) {
+                        (true, true) => "wifi+bluetooth",
+                        (true, false) => "wifi",
+                        _ => "bluetooth",
+                    },
                     p.seen_ms,
                     jstr(&p.code),
                     p.paused

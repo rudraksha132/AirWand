@@ -3,6 +3,7 @@
 use super::log;
 use super::settings::Settings;
 use airwand::protocol::{self, Event, LinkState, Packet};
+use airwand::mux::Mux;
 use airwand::validate;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -35,7 +36,6 @@ struct Peer {
     paused: bool,
     subscribed: bool,
     last_seen: Instant,
-    last_aim_t: f64,
 }
 
 impl Peer {
@@ -49,7 +49,6 @@ impl Peer {
             paused: false,
             subscribed: false,
             last_seen: Instant::now(),
-            last_aim_t: f64::NEG_INFINITY,
         }
     }
 }
@@ -62,6 +61,7 @@ pub struct PeerInfo {
     pub state: LinkState,
     pub paused: bool,
     pub wifi: bool,
+    pub ble: bool,
     pub seen_ms: u64,
     pub code: String,
 }
@@ -74,6 +74,7 @@ struct Inner {
     prompts: VecDeque<Instant>,
 }
 
+
 /// (key, peer paused, event) for every approved event.
 pub type EventFn = Box<dyn Fn(&str, bool, Event) + Send + Sync>;
 /// (device name, pairing code) -> allowed?
@@ -81,6 +82,8 @@ pub type AskFn = Box<dyn Fn(&str, &str) -> bool + Send + Sync>;
 
 pub struct Receiver {
     inner: Mutex<Inner>,
+    /// Device-level view over all links of a device (dedupe, pause, stuck-button release).
+    mux: Mutex<Mux>,
     settings: Arc<Mutex<Settings>>,
     on_event: EventFn,
     ask: AskFn,
@@ -118,6 +121,7 @@ impl Receiver {
         let name = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "PC".into());
         Arc::new(Self {
             inner: Mutex::new(Inner::default()),
+            mux: Mutex::new(Mux::new()),
             settings,
             on_event,
             ask,
@@ -283,6 +287,7 @@ impl Receiver {
         let Ok(list) = ch.SubscribedClients() else { return };
         let keys: HashSet<String> = list.into_iter().filter_map(|c| client_key(&c)).collect();
         let mut fresh = Vec::new();
+        let mut gone: Vec<String> = Vec::new();
         {
             let mut inner = self.inner.lock().unwrap();
             for k in &keys {
@@ -292,7 +297,11 @@ impl Receiver {
                 });
                 p.subscribed = true;
             }
+            gone.extend(inner.peers.iter().filter(|(k, p)| p.subscribed && !keys.contains(*k)).map(|(k, _)| k.clone()));
             inner.peers.retain(|k, p| !p.subscribed || keys.contains(k));
+        }
+        for k in &gone {
+            self.link_gone(k);
         }
         for k in fresh {
             self.send_status(&k);
@@ -340,25 +349,48 @@ impl Receiver {
             }
             Packet::Hello { device_id, kind: _, name } => {
                 let trusted = self.settings.lock().unwrap().trusted.contains(&device_id);
+                self.mux.lock().unwrap().hello(&device_id, key);
                 let mut ask = false;
                 {
                     let mut inner = self.inner.lock().unwrap();
-                    let Some(p) = inner.peers.get_mut(key) else { return };
-                    p.device_id = Some(device_id.clone());
-                    // Web pages send an empty name (BLE writes can be as short as 20 bytes) and put it in `info`.
-                    if !name.is_empty() {
-                        p.name = name;
-                    } else if !p.model.is_empty() {
-                        p.name = p.model.clone();
+                    // A phone that reconnects over Wi-Fi gets a new socket: forget its dead one at once.
+                    if key.starts_with("wifi:") {
+                        let stale: Vec<String> = inner
+                            .peers
+                            .iter()
+                            .filter(|(k, p)| k.starts_with("wifi:") && k.as_str() != key && p.device_id.as_deref() == Some(device_id.as_str()))
+                            .map(|(k, _)| k.clone())
+                            .collect();
+                        for k in stale {
+                            inner.peers.remove(&k);
+                            self.wifi.lock().unwrap().remove(&k);
+                        }
                     }
-                    if trusted {
-                        p.state = LinkState::Approved;
+                    match inner.peers.get_mut(key) {
+                        Some(p) => {
+                            p.device_id = Some(device_id.clone());
+                            // Web pages send an empty name (BLE writes can be as short as 20 bytes) and put it in `info`.
+                            if !name.is_empty() {
+                                p.name = name;
+                            } else if !p.model.is_empty() {
+                                p.name = p.model.clone();
+                            }
+                        }
+                        None => return,
+                    }
+                    // One Allow prompt per DEVICE, even when it says hello over Wi-Fi and Bluetooth at once.
+                    let decision = if trusted {
+                        LinkState::Approved
+                    } else if inner.asking.contains(&device_id) {
+                        LinkState::Waiting
                     } else if Self::may_ask(&mut inner, &device_id) {
                         ask = true;
+                        LinkState::Waiting
                     } else {
-                        if let Some(p) = inner.peers.get_mut(key) {
-                            p.state = LinkState::Denied;
-                        }
+                        LinkState::Denied
+                    };
+                    if let Some(p) = inner.peers.get_mut(key) {
+                        p.state = decision;
                     }
                 }
                 if ask {
@@ -368,51 +400,52 @@ impl Receiver {
                 }
             }
             Packet::Input(events) => {
-                let (approved, paused) = {
+                let (approved, dev) = {
                     let inner = self.inner.lock().unwrap();
                     match inner.peers.get(key) {
-                        Some(p) => (p.state == LinkState::Approved, p.paused),
-                        None => (false, false),
+                        Some(p) => (p.state == LinkState::Approved, p.device_id.clone().unwrap_or_else(|| key.to_string())),
+                        None => (false, key.to_string()),
                     }
                 };
                 if !approved {
                     return;
                 }
-                // Wi-Fi is faster than Bluetooth: while the same device is also live over Wi-Fi, ignore its Bluetooth input.
-                if !key.starts_with("wifi:") && self.wifi_preferred(key) {
-                    return;
-                }
-                let mut paused = paused;
+                // Every link of the device feeds the same device-level stream. The page sends each sample
+                // on all its live links; the first copy to arrive wins, so a dying link costs no time.
                 for ev in events {
+                    let out = {
+                        let mut m = self.mux.lock().unwrap();
+                        m.link_seen(&dev, key);
+                        let e = m.filter(&dev, ev);
+                        let paused = m.paused(&dev);
+                        e.map(|e| (e, paused))
+                    };
+                    let Some((ev, paused)) = out else { continue };
                     match ev {
-                        Event::Aim { t, az, el } => {
-                            // Newest wins: batched packets repeat the previous sample.
-                            let fresh = {
-                                let mut inner = self.inner.lock().unwrap();
-                                match inner.peers.get_mut(key) {
-                                    Some(p) if !(t <= p.last_aim_t && p.last_aim_t - t < 5.0) => {
-                                        p.last_aim_t = t;
-                                        true
-                                    }
-                                    _ => false,
-                                }
-                            };
-                            if fresh {
-                                self.aims.fetch_add(1, Ordering::Relaxed);
-                                (self.on_event)(key, paused, Event::Aim { t, az, el });
-                            }
+                        Event::Aim { .. } => {
+                            self.aims.fetch_add(1, Ordering::Relaxed);
                         }
                         Event::Pause(on) => {
-                            paused = on;
-                            if let Some(p) = self.inner.lock().unwrap().peers.get_mut(key) {
-                                p.paused = on;
+                            for p in self.inner.lock().unwrap().peers.values_mut() {
+                                if p.device_id.as_deref() == Some(dev.as_str()) {
+                                    p.paused = on;
+                                }
                             }
-                            (self.on_event)(key, paused, Event::Pause(on));
                         }
-                        other => (self.on_event)(key, paused, other),
+                        _ => {}
                     }
+                    (self.on_event)(&dev, paused, ev);
                 }
             }
+        }
+    }
+
+    /// A link closed. If it was the device's last link and a button was held, let go of it.
+    fn link_gone(&self, key: &str) {
+        let r = self.mux.lock().unwrap().link_gone(key);
+        if let Some((dev, ev)) = r {
+            log::write("link lost while the button was held: released");
+            (self.on_event)(&dev, false, ev);
         }
     }
 
@@ -436,28 +469,34 @@ impl Receiver {
     }
 
     fn ask_trust(self: &Arc<Self>, key: &str) {
-        {
+        let id = {
             let mut inner = self.inner.lock().unwrap();
-            if inner.asking.contains(key) || !inner.peers.contains_key(key) {
-                return;
+            let Some(id) = inner.peers.get(key).and_then(|p| p.device_id.clone()) else { return };
+            if inner.asking.contains(&id) {
+                return; // another link of this device is already being asked
             }
-            inner.asking.insert(key.to_string());
-            if let Some(p) = inner.peers.get_mut(key) {
-                p.state = LinkState::Waiting;
+            inner.asking.insert(id.clone());
+            for p in inner.peers.values_mut() {
+                if p.device_id.as_deref() == Some(id.as_str()) {
+                    p.state = LinkState::Waiting;
+                }
             }
-        }
+            id
+        };
         self.send_status(key);
         let me = self.clone();
-        let key = key.to_string();
         std::thread::spawn(move || {
             // give the `info` packet a moment to arrive so the prompt shows a name
             std::thread::sleep(Duration::from_millis(300));
-            let (name, id) = {
+            let name = {
                 let inner = me.inner.lock().unwrap();
-                match inner.peers.get(&key) {
-                    Some(p) => (p.name.clone(), p.device_id.clone().unwrap_or_default()),
-                    None => return,
-                }
+                inner
+                    .peers
+                    .values()
+                    .filter(|p| p.device_id.as_deref() == Some(id.as_str()))
+                    .map(|p| p.name.clone())
+                    .find(|n| n != "Unknown device")
+                    .unwrap_or_else(|| "Unknown device".to_string())
             };
             let ok = (me.ask)(&name, &validate::code(&id));
             if ok {
@@ -467,18 +506,26 @@ impl Receiver {
                     s.save();
                 }
             }
-            {
+            // The answer applies to every link of the device.
+            let keys: Vec<String> = {
                 let mut inner = me.inner.lock().unwrap();
-                inner.asking.remove(&key);
-                if let Some(p) = inner.peers.get_mut(&key) {
-                    p.state = if ok { LinkState::Approved } else { LinkState::Denied };
-                }
+                inner.asking.remove(&id);
                 if !ok {
                     inner.denied_at.insert(id.clone(), Instant::now());
                 }
-            }
+                let mut keys = Vec::new();
+                for (k, p) in inner.peers.iter_mut() {
+                    if p.device_id.as_deref() == Some(id.as_str()) {
+                        p.state = if ok { LinkState::Approved } else { LinkState::Denied };
+                        keys.push(k.clone());
+                    }
+                }
+                keys
+            };
             log::write(&format!("pairing {}: {name} ({id})", if ok { "allowed" } else { "denied" }));
-            me.send_status(&key);
+            for k in keys {
+                me.send_status(&k);
+            }
         });
     }
 
@@ -518,18 +565,6 @@ impl Receiver {
         }
     }
 
-    /// True when the device behind this Bluetooth key is also approved and active over Wi-Fi.
-    fn wifi_preferred(&self, key: &str) -> bool {
-        let inner = self.inner.lock().unwrap();
-        let Some(id) = inner.peers.get(key).and_then(|p| p.device_id.clone()) else { return false };
-        inner.peers.iter().any(|(k, p)| {
-            k.starts_with("wifi:")
-                && p.state == LinkState::Approved
-                && p.device_id.as_deref() == Some(id.as_str())
-                && p.last_seen.elapsed() < Duration::from_secs(2)
-        })
-    }
-
     // Wi-Fi link (called by the web server)
 
     /// A phone opened the Wi-Fi link. False = refuse (too many devices).
@@ -554,31 +589,58 @@ impl Receiver {
 
     pub fn wifi_disconnect(&self, key: &str) {
         self.wifi.lock().unwrap().remove(key);
-        let mut inner = self.inner.lock().unwrap();
-        inner.peers.remove(key);
-        inner.asking.remove(key);
+        self.inner.lock().unwrap().peers.remove(key);
+        self.link_gone(key);
     }
 
-    /// Devices that have introduced themselves, for the control panel.
+    /// Devices that have introduced themselves, for the control panel. One row per device;
+    /// `wifi` / `ble` say which links of it are up.
     pub fn peer_infos(&self) -> Vec<PeerInfo> {
         let inner = self.inner.lock().unwrap();
-        let mut v: Vec<PeerInfo> = inner
-            .peers
-            .iter()
-            .filter_map(|(k, p)| {
-                let id = p.device_id.as_ref()?;
-                Some(PeerInfo {
-                    name: p.name.clone(),
-                    model: p.model.clone(),
-                    battery: p.battery,
-                    state: p.state,
-                    paused: p.paused,
-                    wifi: k.starts_with("wifi:"),
-                    seen_ms: p.last_seen.elapsed().as_millis() as u64,
-                    code: validate::code(id),
-                })
-            })
-            .collect();
+        let mut by_dev: HashMap<String, PeerInfo> = HashMap::new();
+        for (k, p) in inner.peers.iter() {
+            let Some(id) = p.device_id.as_ref() else { continue };
+            let is_wifi = k.starts_with("wifi:");
+            let seen_ms = p.last_seen.elapsed().as_millis() as u64;
+            let rank = |s: LinkState| match s {
+                LinkState::Approved => 2,
+                LinkState::Waiting => 1,
+                LinkState::Denied => 0,
+            };
+            match by_dev.get_mut(id) {
+                Some(e) => {
+                    e.wifi |= is_wifi;
+                    e.ble |= !is_wifi;
+                    if rank(p.state) > rank(e.state) {
+                        e.state = p.state;
+                    }
+                    e.paused |= p.paused;
+                    if seen_ms < e.seen_ms {
+                        e.seen_ms = seen_ms;
+                        e.battery = p.battery.or(e.battery);
+                    } else if e.battery.is_none() {
+                        e.battery = p.battery;
+                    }
+                }
+                None => {
+                    by_dev.insert(
+                        id.clone(),
+                        PeerInfo {
+                            name: p.name.clone(),
+                            model: p.model.clone(),
+                            battery: p.battery,
+                            state: p.state,
+                            paused: p.paused,
+                            wifi: is_wifi,
+                            ble: !is_wifi,
+                            seen_ms,
+                            code: validate::code(id),
+                        },
+                    );
+                }
+            }
+        }
+        let mut v: Vec<PeerInfo> = by_dev.into_values().collect();
         v.sort_by_key(|p| p.seen_ms);
         v
     }
@@ -615,5 +677,126 @@ impl Receiver {
             p.state = LinkState::Denied;
         }
         self.broadcast_status();
+    }
+}
+
+#[cfg(test)]
+mod glue_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    fn hello(id: u8) -> Vec<u8> {
+        let mut v = vec![1u8];
+        v.extend([id; 16]);
+        v.push(1);
+        v.extend(b"Phone");
+        v
+    }
+    fn aim(t: f64) -> Vec<u8> {
+        let mut v = vec![2u8];
+        v.extend(t.to_le_bytes());
+        v.extend(1.0f32.to_le_bytes());
+        v.extend(2.0f32.to_le_bytes());
+        v
+    }
+    fn timed(kind: u8, t: f64) -> Vec<u8> {
+        let mut v = vec![kind];
+        v.extend(t.to_le_bytes());
+        v
+    }
+
+    type Log = Arc<Mutex<Vec<(String, Event)>>>;
+    fn rig(auto_allow: bool) -> (Arc<Receiver>, Log, Arc<AtomicUsize>) {
+        let log: Log = Arc::new(Mutex::new(vec![]));
+        let asks = Arc::new(AtomicUsize::new(0));
+        let (l2, a2) = (log.clone(), asks.clone());
+        let r = Receiver::new(
+            Arc::new(Mutex::new(Settings::default())),
+            Box::new(move |k, _p, e| l2.lock().unwrap().push((k.to_string(), e))),
+            Box::new(move |_n, _c| {
+                a2.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(200)); // user is slow: both hellos arrive meanwhile
+                auto_allow
+            }),
+        );
+        (r, log, asks)
+    }
+    fn state(r: &Arc<Receiver>, key: &str) -> LinkState {
+        r.inner.lock().unwrap().peers.get(key).map(|p| p.state).unwrap()
+    }
+
+    #[test]
+    fn one_prompt_for_two_links_and_both_approved() {
+        let (r, _log, asks) = rig(true);
+        assert!(r.wifi_connect("wifi:1", Arc::new(|_| {})));
+        r.handle("wifi:1", &hello(7));
+        r.handle("ble", &hello(7)); // same device over Bluetooth, before the user answered
+        std::thread::sleep(Duration::from_millis(700));
+        assert_eq!(asks.load(Ordering::SeqCst), 1, "must prompt once per device");
+        assert_eq!(state(&r, "wifi:1"), LinkState::Approved);
+        assert_eq!(state(&r, "ble"), LinkState::Approved);
+        let infos = r.peer_infos();
+        assert_eq!(infos.len(), 1, "one panel row per device");
+        assert!(infos[0].wifi && infos[0].ble);
+    }
+
+    #[test]
+    fn denied_applies_to_both_links() {
+        let (r, _log, asks) = rig(false);
+        r.wifi_connect("wifi:1", Arc::new(|_| {}));
+        r.handle("wifi:1", &hello(7));
+        r.handle("ble", &hello(7));
+        std::thread::sleep(Duration::from_millis(700));
+        assert_eq!(asks.load(Ordering::SeqCst), 1);
+        assert_eq!(state(&r, "wifi:1"), LinkState::Denied);
+        assert_eq!(state(&r, "ble"), LinkState::Denied);
+    }
+
+    fn approved_pair() -> (Arc<Receiver>, Log) {
+        let (r, log, _a) = rig(true);
+        r.settings.lock().unwrap().trusted.push(validate::clean("07070707-0707-0707-0707-070707070707", 64));
+        r.wifi_connect("wifi:1", Arc::new(|_| {}));
+        r.handle("wifi:1", &hello(7));
+        r.handle("ble", &hello(7));
+        (r, log)
+    }
+
+    #[test]
+    fn same_sample_on_both_links_moves_once_and_key_is_the_device() {
+        let (r, log) = approved_pair();
+        assert_eq!(state(&r, "ble"), LinkState::Approved);
+        r.handle("wifi:1", &aim(1.0));
+        r.handle("ble", &aim(1.0));
+        r.handle("ble", &aim(1.01));
+        r.handle("wifi:1", &aim(1.01));
+        let l = log.lock().unwrap();
+        assert_eq!(l.len(), 2);
+        assert!(l.iter().all(|(k, _)| k == "07070707-0707-0707-0707-070707070707"), "keyed by device, not link: {:?}", l[0].0);
+    }
+
+    #[test]
+    fn click_on_both_links_fires_once_and_dead_link_does_not_stick() {
+        let (r, log) = approved_pair();
+        r.handle("wifi:1", &timed(3, 5.0));
+        r.handle("ble", &timed(3, 5.0));
+        assert_eq!(log.lock().unwrap().iter().filter(|(_, e)| matches!(e, Event::Press(_))).count(), 1);
+        r.wifi_disconnect("wifi:1"); // BLE still alive: stays held
+        assert!(!log.lock().unwrap().iter().any(|(_, e)| matches!(e, Event::Release(_))));
+        r.handle("ble", &timed(4, 5.5));
+        assert_eq!(log.lock().unwrap().iter().filter(|(_, e)| matches!(e, Event::Release(_))).count(), 1);
+        // hold again, then lose the only link
+        r.handle("ble", &timed(3, 9.0));
+        r.link_gone("ble");
+        assert_eq!(log.lock().unwrap().iter().filter(|(_, e)| matches!(e, Event::Release(_))).count(), 2);
+    }
+
+    #[test]
+    fn wifi_reconnect_replaces_the_dead_socket() {
+        let (r, _log) = approved_pair();
+        r.wifi_connect("wifi:2", Arc::new(|_| {}));
+        r.handle("wifi:2", &hello(7));
+        let keys: Vec<String> = r.inner.lock().unwrap().peers.keys().cloned().collect();
+        assert!(!keys.contains(&"wifi:1".to_string()), "{keys:?}");
+        assert_eq!(r.peer_infos().len(), 1);
     }
 }

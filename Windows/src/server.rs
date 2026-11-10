@@ -220,7 +220,7 @@ fn websocket(mut s: TcpStream, req: &Request, mut buf: Vec<u8>, peer: SocketAddr
         return;
     }
 
-    let _ = s.set_read_timeout(Some(Duration::from_secs(45)));
+    let _ = s.set_read_timeout(Some(Duration::from_secs(12))); // the page pings every second
     let mut tmp = [0u8; 2048];
     'conn: loop {
         loop {
@@ -231,7 +231,7 @@ fn websocket(mut s: TcpStream, req: &Request, mut buf: Vec<u8>, peer: SocketAddr
                     buf.drain(..used);
                     match f.opcode {
                         2 if f.fin => be.ws_packet(&id, &f.payload),
-                        1 if f.fin => {} // keep-alive text from the page
+                        1 if f.fin => write_frame(&writer, 1, b"k"), // keep-alive: the page pings every second and treats silence as a dead link
                         9 => write_frame(&writer, 10, &f.payload),
                         10 => {}
                         8 => {
@@ -395,6 +395,33 @@ mod tests {
         s.write_all(&masked(8, &[])).unwrap();
         assert!(wait_for(|| m.closed.load(Ordering::SeqCst) == 1));
         assert_eq!(m.opened.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn websocket_keepalive_is_echoed() {
+        let (p, _m) = start();
+        let mut s = TcpStream::connect(("127.0.0.1", p)).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        s.write_all(
+            format!("GET /ws HTTP/1.1\r\nHost: 127.0.0.1:{p}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n").as_bytes(),
+        )
+        .unwrap();
+        let mut got: Vec<u8> = Vec::new();
+        let mut tmp = [0u8; 512];
+        while !net::header_end(&got).map(|e| got.len() >= e + 6).unwrap_or(false) {
+            let n = s.read(&mut tmp).unwrap();
+            assert!(n > 0);
+            got.extend_from_slice(&tmp[..n]);
+        }
+        let end = net::header_end(&got).unwrap();
+        let mut rest = got[end + 6..].to_vec();
+        s.write_all(&masked(1, b"k")).unwrap();
+        while rest.len() < 3 {
+            let n = s.read(&mut tmp).unwrap();
+            assert!(n > 0);
+            rest.extend_from_slice(&tmp[..n]);
+        }
+        assert_eq!(&rest[..3], &[0x81, 1, b'k']); // text frame "k" back, so the page can tell the link is alive
     }
 
     #[test]

@@ -73,11 +73,21 @@ This repo also has a Windows receiver (`Windows/`, Rust) and a phone web page (`
 - **Pairing**: open the page, tap *Connect to PC*, pick your PC. The page shows a 6-digit code and the PC shows one in its Allow dialog. Click **Allow** only if they match.
 - Web BLE writes are limited to about 20 bytes and roughly one per connection interval, so expect 30 to 60 aim updates a second; the receiver still eases at 240 Hz. The page learns and removes gyro bias while the phone is still, to reduce yaw drift.
 
+### Connections: Wi-Fi and Bluetooth at the same time (v0.3)
+
+- **Both links stay up.** The phone page opens Wi-Fi and Bluetooth together and keeps each one alive with its own reconnect loop (0.3 s backing off to 5 s, and an immediate retry when the page comes back to the foreground or the network returns). The page shows a chip for each link.
+- **Nothing pauses when a link drops.** Every aim sample, click, Center and Pause goes out on every live link. The PC merges them per device: the first copy to arrive wins and late or duplicate copies are dropped by their timestamps. Scroll and trackpad movement are not repeatable, so they use the primary link only (Wi-Fi, else Bluetooth).
+- **No jump on hand-over.** Calibration, smoothing and click history belong to the device, not to the link, so switching link never recentres or resets the cursor.
+- **Dead links are noticed.** The page pings the PC every second and the PC answers; 3.5 s of silence replaces the link. The PC drops a silent Wi-Fi socket after 12 s. If the last link of a device dies while a button is held, AirWand releases the button.
+- **One Allow prompt per device**, even when the phone pairs over both links at once. The answer applies to both.
+- **Bluetooth backup without the picker.** Pick the PC once (button *Add Bluetooth backup*); next time Chrome's `getDevices()` reconnects without asking. The page also reconnects on its own after a reload (Android).
+- Tests: `node Web/test/links.test.js` runs the real page script against a fake WebSocket and fake Web Bluetooth (both links, drop and recovery, dead-link detection, stop).
+
 ### Control panel and Wi-Fi link (v0.2)
 
 - **Control panel.** Starting `airwand.exe` (or double-clicking it again, or left-clicking the tray icon) opens a window with connection status, the address for your phone, paired devices with their pairing code, pause/center, speed, smoothing, invert, start-with-Windows, security switches and the log. It runs in Edge or Chrome app mode and is only reachable from this PC.
 - **Wi-Fi link.** The PC also serves the phone page on `http://<PC address>:47821` and talks to it over a WebSocket, using the same packets, pairing code and Allow prompt as Bluetooth. It needs no Bluetooth peripheral support, so it works on adapters that cannot be a BLE peripheral. Windows Firewall may ask to allow AirWand on private networks; allow it.
-- **Which is used.** Wi-Fi is tried first (lower latency, more updates per second), Bluetooth is the backup. If the same phone is live over both, the PC uses Wi-Fi.
+- **Which is used.** Both, at once (see v0.3 above). Wi-Fi is the primary link; Bluetooth is a hot standby.
 - **Android setting.** Chrome blocks motion sensors on `http://` pages, so once: open `chrome://flags/#unsafely-treat-insecure-origin-as-secure` on the phone, add the address shown in the panel, set Enabled, Relaunch. iPhone Safari needs HTTPS for motion sensors, so on iPhone use the native app or Bluefy over Bluetooth.
 - **Security.** The Wi-Fi link has the same trust model as plain Bluetooth: pairing needs your approval on the PC, but the device ID travels unencrypted, so only use it on a network you trust. "Allow phones over Wi-Fi" off keeps the server on this PC only. The panel API refuses requests from other machines, wrong Host or Origin headers, and requests without the `X-AirWand` header.
 - **Tests.** `cargo test --lib` also covers the web server (routes, WebSocket handshake and framing, origin and host checks).

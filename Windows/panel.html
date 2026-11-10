@@ -180,6 +180,7 @@ function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.
 
 function agoText(ms) { return ms < 2500 ? 'active now' : ms < 60000 ? `seen ${Math.round(ms / 1000)} s ago` : 'idle'; }
 
+const linkName = t => t === 'wifi+bluetooth' ? 'Wi-Fi + Bluetooth' : t === 'wifi' ? 'Wi-Fi' : 'Bluetooth';
 function render(s) {
   st = s;
   const live = s.peers.filter(p => p.state === 'approved' && p.seenMs < 6000);
@@ -187,7 +188,7 @@ function render(s) {
   const pill = $('pill'); pill.className = 'pill';
   let t;
   if (s.paused) { t = 'Paused'; pill.classList.add('warn'); }
-  else if (live.length) { t = 'Connected · ' + live[0].name + ' · ' + (live[0].transport === 'wifi' ? 'Wi-Fi' : 'Bluetooth'); pill.classList.add('ok'); }
+  else if (live.length) { t = 'Connected · ' + live[0].name + ' · ' + linkName(live[0].transport); pill.classList.add('ok'); }
   else if (waiting.length) { t = 'Waiting for approval'; pill.classList.add('warn'); }
   else if (s.wifi.listening || s.bluetooth.advertising) { t = 'Ready · waiting for a phone'; pill.classList.add('ok'); }
   else { t = 'No connection available'; pill.classList.add('bad'); }
@@ -239,7 +240,7 @@ function render(s) {
   for (const p of s.peers) {
     const row = el('div', 'row'); const g = el('div', 'grow');
     const top = el('div'); top.append(el('b', null, p.name + ' '));
-    top.append(el('span', 'badge', p.transport === 'wifi' ? 'Wi-Fi' : 'Bluetooth'));
+    top.append(el('span', 'badge', linkName(p.transport)));
     if (p.battery != null) top.append(document.createTextNode(' '), el('span', 'badge', p.battery + '%'));
     g.append(top);
     const sub = el('div', 'muted');

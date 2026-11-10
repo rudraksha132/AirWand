@@ -22,6 +22,9 @@
   #scroll { height:56px; color:var(--dim); font-size:13px; }
   .seg button.sel { background:var(--acc); color:#000; }
   #msg { color:var(--dim); font-size:14px; min-height:1.2em; }
+  .chip { padding:4px 10px; border-radius:999px; background:var(--card); color:var(--dim); }
+  .chip.on { background:var(--acc); color:#000; font-weight:600; }
+  .chip.wait { outline:1px solid #ffb454; color:#ffb454; }
 </style>
 </head>
 <body>
@@ -35,11 +38,15 @@
     On iPhone, use the native AirWand app, or Bluefy with Bluetooth.
   </div>
   <button class="main" id="btnConnect">Connect to PC</button>
-  <button id="btnBle">Connect with Bluetooth instead</button>
+  <p id="how" style="font-size:13px"></p>
 </div>
 
 <div id="live">
   <div class="row"><b id="pcName" style="flex:3;align-self:center">Connected</b><button id="btnDisc">Disconnect</button></div>
+  <div id="chips" style="display:flex;gap:8px;font-size:13px">
+    <span class="chip" id="chWifi">Wi-Fi</span><span class="chip" id="chBle">Bluetooth</span>
+    <button id="btnAddBle" style="display:none;padding:4px 10px;font-size:13px;border-radius:999px">Add Bluetooth backup</button>
+  </div>
   <div id="codeBox" style="background:var(--card);border-radius:14px;padding:10px 14px;display:flex;justify-content:space-between;align-items:center"><span style="color:var(--dim);font-size:13px">Pairing code</span><b id="code" style="font-size:22px;letter-spacing:3px">······</b></div>
   <div class="row seg"><button id="mPointer" class="sel">Pointer</button><button id="mTrack">Trackpad</button></div>
   <div id="pad"><div><div id="padText">Tap to click · hold to drag</div><p style="font-size:13px">Point the top edge at the screen</p></div></div>
@@ -76,7 +83,11 @@ async function pairCode() {
   return String(n % 1000000).padStart(6, '0');
 }
 pairCode().then(c => { $('code').textContent = c; }).catch(() => { $('codeBox').style.display = 'none'; });
-setInterval(() => { $('stat').textContent = inp && sensing ? `Sending ${sent} aim/s over ${linkKind}` : (inp ? linkKind : ''); sent = 0; }, 1000);
+setInterval(() => {
+  const up = links.filter(l => l.up);
+  $('stat').textContent = !up.length ? '' : sensing ? 'Aim/s: ' + up.map(l => `${l.name} ${l.sent}`).join(' · ') : up.map(l => l.name).join(' + ');
+  for (const l of links) l.sent = 0;
+}, 1000);
 
 // ---------- packets (little endian, see Shared/Protocol.swift) ----------
 function pkt(kind, len) { const b = new ArrayBuffer(len); const v = new DataView(b); v.setUint8(0, kind); return [b, v]; }
@@ -85,7 +96,7 @@ function pair(kind, a, c) { const [b, v] = pkt(kind, 9); v.setFloat32(1, a, true
 function aimPkt(t, az, el) { const [b, v] = pkt(K.aim, 17); v.setFloat64(1, t, true); v.setFloat32(9, az, true); v.setFloat32(13, el, true); return b; }
 // Two samples in 18 bytes (fits a default 20-byte write): the previous and the newest. If a write is late the receiver
 // still gets the older sample, and it drops duplicates by timestamp.
-let s1 = null, s2 = null, aimDirty = false;
+let s1 = null, s2 = null;
 function buildAim() {
   const a = s1, b = s2;
   const dt = b && a ? Math.round((b.ms - a.ms)) : -1;
@@ -115,157 +126,203 @@ async function infoPkt() {
   return b;
 }
 
-// ---------- BLE link ----------
-let dev = null, inp = null, sta = null, want = false, infoTimer = null, sent = 0, ws = null, linkKind = '', gotMotion = false;
-let state = -1, pcPaused = false;
-const q = []; let latestAim = null, mv = [0, 0], sc = [0, 0], busy = false;
+// ---------- links: Wi-Fi and Bluetooth, both live at once ----------
+// <links>
+// Every transport is a "link" with its own reconnect loop. Both run at the same time:
+//  - every aim sample, click, center and pause goes out on EVERY live link; the PC merges them per device
+//    (first copy wins, duplicates are dropped by timestamp), so when one link dies nothing pauses or jumps;
+//  - scroll and trackpad deltas are not repeatable, so they go out on the primary link only (Wi-Fi, else Bluetooth);
+//  - a link that goes silent is detected within seconds and replaced in the background.
+let BEAT_MS = 1000, DEAD_MS = 3500;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const mkLink = name => ({ name, enabled: false, up: false, write: null, close: null, wake: null, running: false, q: [], aimDirty: false, busy: false, state: -1, pcPaused: false, lastRx: 0, sent: 0, err: '' });
+const wifi = mkLink('Wi-Fi'), ble = mkLink('Bluetooth');
+const links = [wifi, ble];
+let dev = null, want = false, infoTimer = null, state = -1, pcPaused = false;
+let mv = [0, 0], sc = [0, 0];
 
-function push(b) { q.push(b); if (q.length > 64) q.shift(); pump(); }
-async function pump() {
-  if (busy || !inp) return;
-  busy = true;
+const primary = () => wifi.up ? wifi : ble.up ? ble : null;
+function pushTo(l, b) { l.q.push(b); if (l.q.length > 64) l.q.shift(); pump(l); }
+function push(b) { for (const l of links) if (l.up) pushTo(l, b); }         // idempotent packets: all links
+async function pump(l) {
+  if (!l || l.busy || !l.write) return;
+  l.busy = true;
   try {
     for (;;) {
-      let b = q.shift();
+      let b = l.q.shift();
       if (!b) {
-        if (Math.abs(sc[0]) >= 0.5 || Math.abs(sc[1]) >= 0.5) { b = pair(K.scroll, sc[0], sc[1]); sc = [0, 0]; }
-        else if (mv[0] || mv[1]) { b = pair(K.move, mv[0], mv[1]); mv = [0, 0]; }
-        else if (aimDirty) { b = buildAim(); aimDirty = false; sent++; }
+        const first = l === primary();
+        if (first && (Math.abs(sc[0]) >= 0.5 || Math.abs(sc[1]) >= 0.5)) { b = pair(K.scroll, sc[0], sc[1]); sc = [0, 0]; }
+        else if (first && (mv[0] || mv[1])) { b = pair(K.move, mv[0], mv[1]); mv = [0, 0]; }
+        else if (l.aimDirty) { l.aimDirty = false; if (!s2) continue; b = buildAim(); l.sent++; }
         else break;
       }
-      await inp.writeValueWithoutResponse(b);
+      await l.write(b);
     }
   } catch (e) {
-    await new Promise(r => setTimeout(r, 20));
+    await sleep(20);
   } finally {
-    busy = false;
-    if (inp && (q.length || aimDirty || mv[0] || mv[1])) setTimeout(pump, 0);
+    l.busy = false;
+    if (l.write && (l.q.length || l.aimDirty)) setTimeout(() => pump(l), 0);
   }
 }
+function aimAll() { for (const l of links) if (l.up) { l.aimDirty = true; pump(l); } }
 
-function onStatus() { handleStatus(sta.value); }
-function handleStatus(v) {
+function handleStatus(l, v) {
   if (!v || v.byteLength < 2) return;
-  state = v.getUint8(0); pcPaused = v.getUint8(1) !== 0;
+  l.state = v.getUint8(0); l.pcPaused = v.getUint8(1) !== 0;
   const name = new TextDecoder().decode(new Uint8Array(v.buffer, v.byteOffset + 2, v.byteLength - 2));
-  $('pcName').textContent = name || 'Connected';
-  msg(state === 0 ? 'On the PC, check the pairing code matches, then click Allow.' : state === 2 ? 'Denied on the PC. Disconnect and try again.' : '');
+  if (name) $('pcName').textContent = name;
+  refresh();
+}
+function refresh() {
+  const up = links.filter(l => l.up);
+  state = up.some(l => l.state === 1) ? 1 : up.some(l => l.state === 0) ? 0 : up.some(l => l.state === 2) ? 2 : -1;
+  pcPaused = up.some(l => l.state === 1 && l.pcPaused);
+  for (const [id, l] of [['chWifi', wifi], ['chBle', ble]]) {
+    const c = $(id); if (!c) continue;
+    c.style.display = l.enabled ? '' : 'none';
+    c.className = 'chip' + (l.up ? (l.state === 1 ? ' on' : ' wait') : '');
+    c.title = l.up ? 'connected' : (l.err || 'looking for the PC');
+  }
+  if (!want) msg('');
+  else if (state === 0) msg('On the PC, check the pairing code matches, then click Allow.');
+  else if (state === 2) msg('Denied on the PC. Disconnect and try again.');
+  else if (!up.length) msg('Looking for your PC…' + (links.filter(l => l.enabled && l.err).map(l => ` (${l.name}: ${l.err})`).join('')));
+  else msg('');
   updateSensors();
 }
 
-async function link() {
-  linkKind = 'Bluetooth';
-  const server = await dev.gatt.connect();
-  const svc = await server.getPrimaryService(SVC);
-  inp = await svc.getCharacteristic(INP);
-  sta = await svc.getCharacteristic(STA);
-  sta.addEventListener('characteristicvaluechanged', onStatus);
-  await sta.startNotifications();
-  try { await sta.readValue(); } catch {}
-  onStatus();
-  push(await infoPkt());
-  push(helloPkt());
-  clearInterval(infoTimer);
-  infoTimer = setInterval(async () => { if (inp) push(await infoPkt()); }, 30000);
+// One reconnect loop per link. Backs off 0.3 s → 5 s, but wakes at once when the page comes back or the network returns.
+async function keepLinked(l, open) {
+  if (l.running) return;
+  l.running = true;
+  let delay = 300;
+  while (want && l.enabled) {
+    try {
+      const c = await open();
+      if (!want) { try { c.close(); } catch {} break; }
+      l.write = c.write; l.close = c.close; l.up = true; l.err = ''; l.state = -1; delay = 300;
+      afterUp(l);
+      await c.closed;
+    } catch (e) { l.err = (e && e.message) || String(e); }
+    l.up = false; l.write = null; l.close = null; l.q.length = 0; l.aimDirty = false; l.state = -1;
+    refresh(); pump(primary());
+    if (!want || !l.enabled) break;
+    await new Promise(r => { l.wake = r; setTimeout(r, delay); });
+    l.wake = null; delay = Math.min(delay * 1.7, 5000);
+  }
+  l.running = false;
+}
+function kick() { for (const l of links) if (l.wake) l.wake(); }
+async function afterUp(l) {
+  pushTo(l, await infoPkt());
+  pushTo(l, helloPkt());
+  refresh(); pump(primary());
 }
 
-// ---------- Wi-Fi link (page served by the PC; same packets as Bluetooth, over a WebSocket) ----------
-function openWs() {
+function openWifi() {
   return new Promise((resolve, reject) => {
     let sock;
     try { sock = new WebSocket(`ws://${location.host}/ws`); } catch (e) { reject(e); return; }
     sock.binaryType = 'arraybuffer';
     const t = setTimeout(() => { try { sock.close(); } catch {} reject(new Error('timeout')); }, 3000);
-    sock.onopen = () => { clearTimeout(t); resolve(sock); };
     sock.onerror = () => { clearTimeout(t); reject(new Error('could not reach the PC')); };
+    sock.onopen = () => {
+      clearTimeout(t);
+      let beat = null, done; const closed = new Promise(r => { done = r; });
+      const end = () => { clearInterval(beat); sock.onclose = sock.onerror = sock.onmessage = null; try { sock.close(); } catch {} done(); };
+      wifi.lastRx = performance.now();
+      sock.onmessage = e => { wifi.lastRx = performance.now(); if (e.data instanceof ArrayBuffer) handleStatus(wifi, new DataView(e.data)); };
+      sock.onclose = end; sock.onerror = end;
+      // the PC echoes this; silence for DEAD_MS means the link is dead even if the socket never says so
+      beat = setInterval(() => {
+        if (performance.now() - wifi.lastRx > DEAD_MS) { wifi.err = 'no answer'; end(); return; }
+        try { sock.send('k'); } catch { end(); }
+      }, BEAT_MS);
+      resolve({ closed, close: end, write: async b => {
+        if (sock.readyState !== 1) throw new Error('closed');
+        if (sock.bufferedAmount > 8192) await sleep(4);   // let a backlog drain
+        sock.send(b);
+      } });
+    };
   });
 }
-function wsShim(sock) {
-  return { async writeValueWithoutResponse(b) {
-    if (sock.readyState !== 1) throw new Error('closed');
-    if (sock.bufferedAmount > 8192) await new Promise(r => setTimeout(r, 4));   // let a backlog drain
-    sock.send(b);
-  } };
-}
-async function linkWifi() {
-  const sock = await openWs();
-  ws = sock; linkKind = 'Wi-Fi';
-  sock.onmessage = e => { if (e.data instanceof ArrayBuffer) handleStatus(new DataView(e.data)); };
-  sock.onclose = () => { if (ws === sock) onWsDrop(); };
-  inp = wsShim(sock);
-  push(await infoPkt());
-  push(helloPkt());
-  clearInterval(infoTimer);
-  infoTimer = setInterval(async () => {
-    if (!inp) return;
-    try { if (sock.readyState === 1) sock.send('k'); } catch {}
-    push(await infoPkt());
-  }, 15000);
-}
-async function onWsDrop() {
-  inp = null; ws = null; state = -1; stopSensors();
-  if (!want) return;
-  msg('Wi-Fi link lost. Retrying…');
-  for (let i = 0; want && i < 20; i++) {
-    try { await linkWifi(); msg(''); return; } catch { await new Promise(r => setTimeout(r, 1500)); }
-  }
-  if (want) { want = false; clearInterval(infoTimer); show('connect'); msg('Could not reconnect. Try again, or use Bluetooth.'); }
+
+async function openBle() {
+  if (!dev) throw new Error('no Bluetooth device chosen');
+  const server = await dev.gatt.connect();
+  const svc = await server.getPrimaryService(SVC);
+  const inp = await svc.getCharacteristic(INP);
+  const sta = await svc.getCharacteristic(STA);
+  sta.oncharacteristicvaluechanged = () => handleStatus(ble, sta.value);
+  await sta.startNotifications();
+  let done; const closed = new Promise(r => { done = r; });
+  dev.addEventListener('gattserverdisconnected', () => done(), { once: true });
+  if (!dev.gatt.connected) done();
+  try { handleStatus(ble, await sta.readValue()); } catch {}
+  return { closed, close: () => { try { dev.gatt.connected && dev.gatt.disconnect(); } catch {} }, write: b => inp.writeValueWithoutResponse(b) };
 }
 
-// Main button. Wi-Fi is tried first (lower latency); Bluetooth is the second choice.
-async function connect() {
+// A Bluetooth device the user picked earlier needs no picker again (Chrome's getDevices()).
+async function rememberedBle() {
+  if (!navigator.bluetooth || !navigator.bluetooth.getDevices) return null;
+  try {
+    const id = localStorage.getItem('bleId');
+    const all = await navigator.bluetooth.getDevices();
+    return all.find(d => d.id === id) || all[0] || null;
+  } catch { return null; }
+}
+async function pickBle() {
+  dev = await navigator.bluetooth.requestDevice({ filters: [{ services: [SVC] }] });
+  try { localStorage.setItem('bleId', dev.id); } catch {}
+}
+
+async function infoTick() { if (want) push(await infoPkt()); }
+let starting = false;
+async function start(auto) {
+  if (want || starting) return;
+  starting = true;
+  try { await begin(); } finally { starting = false; }
+}
+async function begin() {
   msg('');
   try { await sensorPermission(); } catch (e) { msg(e.message); return; }
+  if (!dev) dev = await rememberedBle();
+  if (!FROM_PC && !dev) {                       // page from the internet: Bluetooth is the only way
+    if (!navigator.bluetooth) { $('warn').textContent = 'Web Bluetooth is not available. Use Chrome on Android, or Bluefy on iPhone.'; return; }
+    try { await pickBle(); } catch (e) { msg(e.name === 'NotFoundError' ? 'No PC picked.' : 'Could not start Bluetooth: ' + e.message); return; }
+  }
   want = true;
-  try {
-    msg('Connecting over Wi-Fi…');
-    await linkWifi();
-    show('live'); keepAwake(); msg('');
-  } catch (e) {
-    want = false; inp = null; ws = null;
-    msg('Wi-Fi link failed (' + e.message + ').' + (navigator.bluetooth ? ' Tap "Connect with Bluetooth instead".' : ''));
-  }
+  try { localStorage.setItem('autoConnect', '1'); } catch {}
+  wifi.enabled = FROM_PC;
+  ble.enabled = !!navigator.bluetooth && !!dev;
+  show('live'); keepAwake();
+  $('btnAddBle').style.display = FROM_PC && navigator.bluetooth && !dev ? '' : 'none';
+  clearInterval(infoTimer); infoTimer = setInterval(infoTick, 20000);
+  refresh();
+  if (wifi.enabled) keepLinked(wifi, openWifi);
+  if (ble.enabled) keepLinked(ble, openBle);
 }
-
-async function connectBle() {
-  if (!navigator.bluetooth) { $('warn').textContent = 'Web Bluetooth is not available. Use Chrome on Android, or Bluefy on iPhone.'; return; }
-  try {
-    await sensorPermission();
-    dev = await navigator.bluetooth.requestDevice({ filters: [{ services: [SVC] }] });
-    want = true;
-    dev.addEventListener('gattserverdisconnected', onDrop);
-    msg('Connecting…');
-    await link();
-    show('live');
-    keepAwake();
-  } catch (e) {
-    msg(e.name === 'NotFoundError' ? 'No PC picked.' : 'Could not connect: ' + e.message);
-    inp = null;
-  }
+async function addBle() {
+  try { await pickBle(); } catch (e) { if (e.name !== 'NotFoundError') msg('Bluetooth: ' + e.message); return; }
+  ble.enabled = true; $('btnAddBle').style.display = 'none';
+  if (want) keepLinked(ble, openBle);
 }
-
-async function onDrop() {
-  inp = null; state = -1; stopSensors();
-  if (!want) return;
-  msg('Connection lost. Retrying…');
-  for (let i = 0; want && i < 30; i++) {
-    try { await link(); msg(''); return; } catch { await new Promise(r => setTimeout(r, 1500)); }
-  }
-  if (want) { want = false; clearInterval(infoTimer); show('connect'); msg('Could not reconnect.'); }
-}
-
-function disconnect() {
+function stop() {
   want = false; stopSensors();
-  try { dev && dev.gatt.connected && dev.gatt.disconnect(); } catch {}
-  const w = ws; ws = null; try { w && w.close(); } catch {}
-  clearInterval(infoTimer); inp = null; show('connect'); msg('');
+  try { localStorage.removeItem('autoConnect'); } catch {}
+  clearInterval(infoTimer);
+  for (const l of links) { try { l.close && l.close(); } catch {} if (l.wake) l.wake(); l.up = false; l.write = null; l.q.length = 0; l.state = -1; }
+  show('connect'); msg('');
 }
+// </links>
 
 // ---------- motion → az/el (port of MotionAim.swift) ----------
 // el: gravity from the fused orientation (beta/gamma) → never drifts.
 // az: gyro rate about the true vertical, integrated.
 const D2R = Math.PI / 180;
-let up = null, az = 0, lastT = null, sensing = false, aimOn = true, paused = false;
+let up = null, az = 0, lastT = null, sensing = false, aimOn = true, paused = false, gotMotion = false;
 
 function onOrient(e) {
   if (e.beta == null || e.gamma == null) return;
@@ -301,8 +358,8 @@ function onMotion(e) {
   if (az > 360 || az < -360) az %= 360;
   if (!Number.isFinite(az) || !Number.isFinite(el)) { az = 0; return; }
   gotMotion = true;
-  s1 = s2; s2 = { ms: e.timeStamp, az, el }; aimDirty = true;
-  pump();
+  s1 = s2; s2 = { ms: e.timeStamp, az, el };
+  aimAll();
 }
 
 async function sensorPermission() {
@@ -322,7 +379,7 @@ function stopSensors() {
   if (!sensing) return; sensing = false;
   removeEventListener('deviceorientation', onOrient);
   removeEventListener('devicemotion', onMotion);
-  up = null; aimDirty = false; s1 = s2 = null;
+  up = null; for (const l of links) l.aimDirty = false; s1 = s2 = null;
 }
 function updateSensors() { (state === 1 && aimOn && !paused && !pcPaused) ? startSensors() : stopSensors(); }
 
@@ -341,7 +398,7 @@ pad.addEventListener('pointermove', e => {
   const dx = e.clientX - lastXY[0], dy = e.clientY - lastXY[1];
   lastXY = [e.clientX, e.clientY];
   if (Math.hypot(e.clientX - downXY[0], e.clientY - downXY[1]) > 6) moved = true;
-  if (moved) { mv[0] += dx * 1.8; mv[1] += dy * 1.8; pump(); }
+  if (moved) { mv[0] += dx * 1.8; mv[1] += dy * 1.8; pump(primary()); }
 });
 function padUp() {
   pad.classList.remove('on');
@@ -354,7 +411,7 @@ pad.addEventListener('pointercancel', padUp);
 
 let sy = null;
 $('scroll').addEventListener('pointerdown', e => { e.preventDefault(); $('scroll').setPointerCapture(e.pointerId); sy = e.clientY; });
-$('scroll').addEventListener('pointermove', e => { if (sy == null) return; sc[1] += (e.clientY - sy) * 2.2; sy = e.clientY; pump(); });
+$('scroll').addEventListener('pointermove', e => { if (sy == null) return; sc[1] += (e.clientY - sy) * 2.2; sy = e.clientY; pump(primary()); });
 $('scroll').addEventListener('pointerup', () => sy = null);
 $('scroll').addEventListener('pointercancel', () => sy = null);
 
@@ -373,23 +430,26 @@ $('bPause').onclick = () => {
   paused = !paused; $('bPause').textContent = paused ? 'Resume' : 'Pause';
   const [b, v] = pkt(K.pause, 2); v.setUint8(1, paused ? 1 : 0); push(b); updateSensors();
 };
-$('btnConnect').onclick = FROM_PC ? connect : connectBle;
-$('btnBle').onclick = connectBle;
-$('btnDisc').onclick = disconnect;
+$('btnConnect').onclick = () => start(false);
+$('btnAddBle').onclick = addBle;
+$('btnDisc').onclick = stop;
 
 // ---------- misc ----------
 let lock = null;
 async function keepAwake() { try { lock = await navigator.wakeLock.request('screen'); } catch {} }
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && want) keepAwake(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && want) { keepAwake(); kick(); } });
+addEventListener('online', kick);
 function show(id) { $('connect').style.display = id === 'connect' ? 'flex' : 'none'; $('live').style.display = id === 'live' ? 'flex' : 'none'; }
 show('connect');
 if (FROM_PC) {
-  $('intro').textContent = 'Your phone becomes a pointer for your Windows PC. Uses Wi-Fi first (fastest), Bluetooth as the backup.';
-  $('btnBle').style.display = navigator.bluetooth ? '' : 'none';
+  $('intro').textContent = 'Your phone becomes a pointer for your Windows PC. Wi-Fi and Bluetooth work together: if one drops, the other carries on.';
+  $('how').textContent = navigator.bluetooth ? 'Bluetooth is added as a backup after you connect (one tap, once).' : '';
   if (!window.isSecureContext) { $('insecure').style.display = 'block'; $('origin').textContent = location.origin; }
+  // Come back on its own after a reload or when the phone wakes (iPhone needs a tap for the motion permission).
+  let auto = false; try { auto = localStorage.getItem('autoConnect') === '1'; } catch {}
+  if (auto && !(window.DeviceMotionEvent && typeof DeviceMotionEvent.requestPermission === 'function')) start(true);
 } else {
-  $('btnBle').style.display = 'none';
-  $('intro').textContent = 'Your phone becomes a pointer for your Windows PC over Bluetooth. Start AirWand on the PC first.';
+  $('intro').textContent = 'Your phone becomes a pointer for your Windows PC over Bluetooth. Start AirWand on the PC first. For Wi-Fi as well, open the address shown in the PC panel.';
   if (!navigator.bluetooth) $('warn').textContent = 'Web Bluetooth is not available in this browser. Use Chrome on Android, or Bluefy on iPhone.';
 }
 </script>
