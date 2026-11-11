@@ -112,7 +112,7 @@ setInterval(() => {
   $('diag').style.display = (state !== 1 || (sensing && rMotion + rOrient === 0) || linkErr || permissionNote) ? '' : 'none';
   $('diag').textContent = [
     'link: ' + (up.map(l => l.name).join(' + ') || 'none') + ' | PC: ' + pcs,
-    'sensors: ' + (sensing ? `motion ${rMotion}/s, orientation ${rOrient}/s` : 'off') + (window.isSecureContext ? '' : ' | page is not HTTPS'),
+    'sensors: ' + (sensing ? `motion ${rMotion}/s, orientation ${rOrient}/s` : 'off') + (window.isSecureContext ? '' : ' | page is not HTTPS') + (sensing ? ' | aim: ' + (haveAlpha ? 'fused orientation' : 'gyro') : ''),
     permissionNote, linkErr
   ].filter(Boolean).join('\n');
   $('stat').textContent = !up.length ? '' : sensing ? 'Aim/s: ' + up.map(l => `${l.name} ${l.sent}`).join(' · ') : up.map(l => l.name).join(' + ');
@@ -355,16 +355,35 @@ const D2R = Math.PI / 180;
 let up = null, az = 0, lastT = null, sensing = false, aimOn = true, paused = false, gotMotion = false;
 
 let nOrient = 0, nMotion = 0, rOrient = 0, rMotion = 0;
+// Main source: the browser's fused orientation (the OS already combines gyro, accelerometer and drift
+// correction, like iOS attitude does for the original app). The top edge of the phone, in earth axes, is
+//   [-sin(alpha) cos(beta), cos(alpha) cos(beta), sin(beta)]
+// so elevation = beta and azimuth (+ = turning left) = atan2(sin(alpha) cos(beta), cos(alpha) cos(beta)).
+// Roll does not matter. Pointing almost straight up or down has no direction, so azimuth holds there.
+let haveAlpha = false, azRaw = null, azU = 0;
 function onOrient(e) {
   nOrient++;
   if (e.beta == null || e.gamma == null) return;
   const b = e.beta * D2R, g = e.gamma * D2R;
   up = [-Math.sin(g) * Math.cos(b), Math.sin(b), Math.cos(g) * Math.cos(b)];   // "up" in device axes
+  if (e.alpha == null || !Number.isFinite(e.alpha)) return;                    // no yaw: the gyro path below takes over
+  haveAlpha = true;
+  const a = e.alpha * D2R, cb = Math.cos(b);
+  const el = Math.asin(Math.max(-1, Math.min(1, Math.sin(b)))) / D2R;
+  if (Math.abs(cb) > 0.15) {
+    const raw = Math.atan2(Math.sin(a) * cb, Math.cos(a) * cb) / D2R;
+    if (azRaw != null) { let d = raw - azRaw; d -= 360 * Math.round(d / 360); azU += d; }
+    azRaw = raw;
+  }
+  gotMotion = true;
+  s1 = s2; s2 = { ms: e.timeStamp, az: azU, el };
+  aimAll();
 }
 
 let bias = [0, 0, 0], stillFor = 0;
 function onMotion(e) {
   nMotion++;
+  if (haveAlpha) return;                 // aiming from the fused orientation
   const r = e.rotationRate;
   if (!r || r.alpha == null) return;
   const w = [r.beta, r.gamma, r.alpha];
@@ -409,7 +428,7 @@ async function sensorPermission() {
   }
 }
 function startSensors() {
-  if (sensing) return; sensing = true; lastT = null; gotMotion = false;
+  if (sensing) return; sensing = true; lastT = null; gotMotion = false; haveAlpha = false; azRaw = null; azU = 0;
   setTimeout(() => { if (sensing && !gotMotion) msg('No motion data. Chrome blocks motion sensors on http pages. In Chrome open chrome://flags/#unsafely-treat-insecure-origin-as-secure, add exactly ' + location.origin + ' , choose Enabled, tap Relaunch, then open this page again.'); }, 3000);
   addEventListener('deviceorientation', onOrient);
   addEventListener('devicemotion', onMotion);
