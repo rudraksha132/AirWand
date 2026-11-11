@@ -165,6 +165,7 @@
       <h2>Startup and security</h2>
       <div class="row"><div class="grow">Start AirWand with Windows<div class="muted">Runs in the tray, no window</div></div><label class="switch"><input type="checkbox" id="autostart"><span></span><b class="sr">Start with Windows</b></label></div>
       <div class="row"><div class="grow">Allow phones over Wi-Fi<div class="muted">Off = this PC only. Restart AirWand to apply</div></div><label class="switch"><input type="checkbox" id="wifi"><span></span><b class="sr">Allow phones over Wi-Fi</b></label></div>
+      <div class="row"><div class="grow">Allow typing from phones<div class="muted">Approved phones can type and press keys on this PC. Off by default</div></div><label class="switch"><input type="checkbox" id="typing"><span></span><b class="sr">Allow typing from phones</b></label></div>
       <div class="row"><div class="grow">Require encrypted Bluetooth<div class="muted">Restart AirWand to apply</div></div><label class="switch"><input type="checkbox" id="encrypt"><span></span><b class="sr">Require encrypted Bluetooth</b></label></div>
       <div class="muted" style="margin-top:8px">New devices must be approved on this PC, and the code on the phone must match. Only pair devices you own: on Wi-Fi and unencrypted Bluetooth, the device ID is visible to others on the same network.</div>
     </section>
@@ -263,7 +264,7 @@ function render(s) {
   $('pause').textContent = s.paused ? 'Resume' : 'Pause';
   for (const [id, key] of [['range', 'range'], ['smooth', 'smooth']])
     for (const b of $(id).children) b.classList.toggle('sel', Number(b.dataset.v) === s.settings[key]);
-  for (const [id, key] of [['predict', 'predict'], ['invx', 'invX'], ['invy', 'invY'], ['autostart', 'autostart'], ['wifi', 'wifi'], ['encrypt', 'encrypt']])
+  for (const [id, key] of [['predict', 'predict'], ['invx', 'invX'], ['invy', 'invY'], ['autostart', 'autostart'], ['wifi', 'wifi'], ['typing', 'typing'], ['encrypt', 'encrypt']])
     if (document.activeElement !== $(id)) $(id).checked = !!s.settings[key];
 
   $('rate').textContent = s.aimRate; $('rejected').textContent = s.rejected;
@@ -341,7 +342,7 @@ $('quit').onclick = async () => {
   document.body.innerHTML = '<p style="text-align:center;margin-top:30vh" class="muted">AirWand has closed. You can close this window.</p>';
 };
 for (const id of ['range', 'smooth']) $(id).addEventListener('click', e => { const b = e.target.closest('button'); if (b) act(id, b.dataset.v); });
-for (const id of ['predict', 'invx', 'invy', 'autostart', 'wifi', 'encrypt']) $(id).addEventListener('change', e => act(id, e.target.checked ? 1 : 0));
+for (const id of ['predict', 'invx', 'invy', 'autostart', 'wifi', 'typing', 'encrypt']) $(id).addEventListener('change', e => act(id, e.target.checked ? 1 : 0));
 
 // Remember the window size and place; open the same way next time.
 let lastWin = '', restored = false;

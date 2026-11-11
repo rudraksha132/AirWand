@@ -25,16 +25,16 @@ function world({ echo = true } = {}) {
   const svc = { getCharacteristic: async u => (u.endsWith('0002-3c2b-4f7d-9b61-2a9e5d0c4f10') ? inp : sta) };
   const dev = { id: 'dev1', addEventListener: (n, f) => w.ble.listeners.push(f), gatt: { get connected() { return w.ble.connected; }, connect: async () => { w.ble.connected = true; return { getPrimaryService: async () => svc }; }, disconnect: () => { w.ble.connected = false; w.ble.listeners.splice(0).forEach(f => f()); } } };
   w.dev = dev;
-  const store = {};
+  const store = {}; w.store = store;
   const env = {
-    document: { getElementById: () => proxy(), addEventListener() {}, visibilityState: 'visible' },
+    document: { getElementById: () => proxy(), querySelectorAll: () => [], addEventListener() {}, visibilityState: 'visible' },
     window: { isSecureContext: true }, addEventListener() {}, removeEventListener() {},
     navigator: { userAgent: 'Android', bluetooth: { getDevices: async () => [dev], requestDevice: async () => dev }, vibrate() {}, wakeLock: { request: async () => ({}) }, getBattery: async () => ({ level: 0.5 }) },
     location: { protocol: 'http:', host: 'pc:47821', origin: 'http://pc:47821' },
     WebSocket: FakeWS, localStorage: { getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = String(v); }, removeItem: k => { delete store[k]; } },
     DeviceMotionEvent: undefined, DeviceOrientationEvent: undefined, crypto: require('crypto').webcrypto,
   };
-  const fn = new Function(...Object.keys(env), code + '\nreturn { start, stop, links, wifi, ble, push, timed, K, pair, aimAll, primary, setSamples(a, b) { s1 = a; s2 = b; }, mvAdd(x, y) { mv[0] += x; mv[1] += y; }, getMv: () => mv, getState: () => state };');
+  const fn = new Function(...Object.keys(env), code + '\nreturn { start, stop, links, wifi, ble, push, timed, K, pair, aimAll, primary, setSamples(a, b) { s1 = a; s2 = b; }, mvAdd(x, y) { mv[0] += x; mv[1] += y; }, getMv: () => mv, getState: () => state, sendTextOut, sendKeyOut, setTune, getTune: () => tune, updateCode };');
   w.page = fn(...Object.values(env));
   return w;
 }
@@ -43,6 +43,28 @@ const nonText = s => s.sent.filter(x => typeof x !== 'string');
 const kindsOf = s => nonText(s).map(b => new Uint8Array(b)[0]);
 
 const tests = {
+  async 'tune goes out once on every link after approval, text and keys on the primary only'(w) {
+    await w.page.start(); await until(() => w.page.wifi.up && w.page.ble.up);
+    w.sockets[0].status(0, 0, 'PC');
+    assert(!kindsOf(w.sockets[0]).includes(12), 'no tune before approval');
+    w.sockets[0].status(1, 0, 'PC');
+    assert(await until(() => kindsOf(w.sockets[0]).includes(12) && w.ble.writes.some(b => b[0] === 12)), 'tune on both');
+    w.sockets[0].status(1, 0, 'PC'); w.sockets[0].status(1, 0, 'PC');
+    await new Promise(r => setTimeout(r, 30));
+    assert(kindsOf(w.sockets[0]).filter(k => k === 12).length === 1, 'tune not repeated');
+    const t = nonText(w.sockets[0]).find(b => new Uint8Array(b)[0] === 12);
+    assert([...new Uint8Array(t)].join() === '12,50,40,50', 'default tune ' + [...new Uint8Array(t)]);
+    w.page.setTune([80, 0, 30]);
+    assert(await until(() => w.ble.writes.filter(b => b[0] === 12).length === 2), 'changed tune resent');
+    w.page.sendTextOut('h\u200bi \u00e9');
+    w.page.sendKeyOut(2, 4);
+    assert(await until(() => kindsOf(w.sockets[0]).includes(13) && kindsOf(w.sockets[0]).includes(14)), 'text and key on wifi');
+    const tx = nonText(w.sockets[0]).find(b => new Uint8Array(b)[0] === 13);
+    assert(new TextDecoder().decode(new Uint8Array(tx).slice(1)) === 'hi \u00e9', 'zero-width stripped');
+    assert(!w.ble.writes.some(b => b[0] === 13 || b[0] === 14), 'not duplicated on bluetooth');
+    assert(w.store.pairedPC, 'paired PC remembered');
+    assert(w.store.tune === '[80,0,30]', 'tune remembered');
+  },
   async 'both links come up and both say hello'(w) {
     await w.page.start();
     assert(await until(() => w.page.wifi.up && w.page.ble.up), 'both up');

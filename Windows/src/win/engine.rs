@@ -118,6 +118,27 @@ impl Engine {
         geometry::clamp(geometry::project(x_deg, y_deg, main, range), &rects)
     }
 
+    /// A point given in screen halves from the centre of the main display (1.0 = its edge), clamped to the layout.
+    pub fn from_norm(&self, u: f64, v: f64) -> P {
+        let (rects, main) = self.displays();
+        let x = main.l as f64 + main.width() as f64 / 2.0 * (1.0 + u);
+        let y = main.t as f64 + main.height() as f64 / 2.0 * (1.0 + v);
+        geometry::clamp((x as f32, y as f32), &rects)
+    }
+
+    /// Where the cursor is now, in screen halves from the centre of the main display.
+    pub fn cursor_norm(&self) -> (f64, f64) {
+        let cur = self.st.lock().unwrap().current.or_else(native::cursor_pos);
+        let (_, main) = self.displays();
+        match cur {
+            Some(c) => (
+                (c.0 as f64 - (main.l as f64 + main.width() as f64 / 2.0)) / (main.width() as f64 / 2.0).max(1.0),
+                (c.1 as f64 - (main.t as f64 + main.height() as f64 / 2.0)) / (main.height() as f64 / 2.0).max(1.0),
+            ),
+            None => (0.0, 0.0),
+        }
+    }
+
     // loop
 
     fn tick(&self) {
@@ -299,15 +320,16 @@ impl Engine {
     }
 
     /// dy > 0 = content moves down (natural), like the phone's scroll strip.
-    pub fn scroll(&self, dx: f64, dy: f64) {
+    pub fn scroll(&self, dx: f64, dy: f64, gain: f64) {
         if !airwand::validate::delta(dx, dy) {
             return;
         }
+        let g = 3.0 * gain.clamp(0.1, 8.0);
         let (ix, iy);
         {
             let mut r = self.scroll_rem.lock().unwrap();
-            r.1 += dy * 3.0; // ~40 px of finger travel per wheel notch (120 units)
-            r.0 += -dx * 3.0;
+            r.1 += dy * g; // ~40 px of finger travel per wheel notch (120 units)
+            r.0 += -dx * g;
             iy = r.1.trunc() as i32;
             ix = r.0.trunc() as i32;
             r.1 -= iy as f64;

@@ -243,7 +243,7 @@ impl Backend for Control {
             None => "null".to_string(),
         };
         format!(
-            "{{\"version\":{},\"pcName\":{},\"paused\":{},\"bluetooth\":{{\"advertising\":{},\"error\":{}}},\"wifi\":{{\"enabled\":{},\"listening\":{},\"port\":{},\"urls\":[{}],\"names\":[{}],\"short\":{},\"nameError\":{},\"error\":{}}},\"peers\":[{}],\"trusted\":{},\"aimRate\":{},\"rejected\":{},\"settings\":{{\"range\":{},\"smooth\":{},\"invX\":{},\"invY\":{},\"predict\":{},\"encrypt\":{},\"wifi\":{},\"autostart\":{}}},\"window\":[{},{},{},{},{}],\"log\":[{}]}}",
+            "{{\"version\":{},\"pcName\":{},\"paused\":{},\"bluetooth\":{{\"advertising\":{},\"error\":{}}},\"wifi\":{{\"enabled\":{},\"listening\":{},\"port\":{},\"urls\":[{}],\"names\":[{}],\"short\":{},\"nameError\":{},\"error\":{}}},\"peers\":[{}],\"trusted\":{},\"aimRate\":{},\"rejected\":{},\"settings\":{{\"range\":{},\"smooth\":{},\"invX\":{},\"invY\":{},\"predict\":{},\"encrypt\":{},\"wifi\":{},\"autostart\":{},\"typing\":{}}},\"window\":[{},{},{},{},{}],\"log\":[{}]}}",
             jstr(env!("CARGO_PKG_VERSION")),
             jstr(&self.receiver.pc_name),
             self.paused.load(Ordering::Relaxed),
@@ -269,6 +269,7 @@ impl Backend for Control {
             s.require_encryption,
             s.wifi_enabled,
             self.autostart.load(Ordering::Relaxed),
+            s.typing,
             s.win_w,
             s.win_h,
             s.win_x,
@@ -305,6 +306,7 @@ impl Backend for Control {
             "invy" => self.save(|s| s.inv_y = on),
             "encrypt" => self.save(|s| s.require_encryption = on),
             "wifi" => self.save(|s| s.wifi_enabled = on),
+            "typing" => self.save(|s| s.typing = on),
             "autostart" => {
                 if set_autostart(on) {
                     self.autostart.store(on, Ordering::Relaxed);

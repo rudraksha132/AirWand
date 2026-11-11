@@ -13,7 +13,8 @@ use windows::Win32::System::Threading::{
     WaitForSingleObject, HIGH_PRIORITY_CLASS, INFINITE, PROCESS_INFORMATION_CLASS, PROCESS_POWER_THROTTLING_STATE,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN,
+    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP,
+    KEYEVENTF_UNICODE, VIRTUAL_KEY, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN,
     MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK,
     MOUSEEVENTF_WHEEL, MOUSEINPUT, MOUSE_EVENT_FLAGS, GetDoubleClickTime,
 };
@@ -145,6 +146,61 @@ fn send(inputs: &[INPUT]) {
     } else {
         REFUSED.store(0, Ordering::Relaxed);
     }
+}
+
+fn kbd(vk: u16, scan: u16, flags: KEYBD_EVENT_FLAGS) -> INPUT {
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VIRTUAL_KEY(vk), wScan: scan, dwFlags: flags, time: 0, dwExtraInfo: 0 } },
+    }
+}
+
+/// Types text at the keyboard focus, one UTF-16 unit at a time, whatever the keyboard layout.
+pub fn type_text(s: &str) {
+    let mut v = Vec::new();
+    for u in s.encode_utf16() {
+        v.push(kbd(0, u, KEYEVENTF_UNICODE));
+        v.push(kbd(0, u, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP));
+    }
+    if !v.is_empty() {
+        send(&v);
+    }
+}
+
+/// A special key (codes as in the protocol) with optional ctrl (1), alt (2), shift (4).
+pub fn key(code: u8, mods: u8) {
+    let (vk, ext): (u16, bool) = match code {
+        1 => (0x08, false),
+        2 => (0x0D, false),
+        3 => (0x09, false),
+        4 => (0x1B, false),
+        5 => (0x25, true),
+        6 => (0x27, true),
+        7 => (0x26, true),
+        8 => (0x28, true),
+        9 => (0x2E, true),
+        10 => (0x24, true),
+        11 => (0x23, true),
+        12 => (0x21, true),
+        13 => (0x22, true),
+        _ => return,
+    };
+    let ef = if ext { KEYEVENTF_EXTENDEDKEY } else { KEYBD_EVENT_FLAGS(0) };
+    let mods_vk: [(u8, u16); 3] = [(1, 0x11), (2, 0x12), (4, 0x10)];
+    let mut v = Vec::new();
+    for (bit, m) in mods_vk {
+        if mods & bit != 0 {
+            v.push(kbd(m, 0, KEYBD_EVENT_FLAGS(0)));
+        }
+    }
+    v.push(kbd(vk, 0, ef));
+    v.push(kbd(vk, 0, ef | KEYEVENTF_KEYUP));
+    for (bit, m) in mods_vk.iter().rev() {
+        if mods & bit != 0 {
+            v.push(kbd(*m, 0, KEYEVENTF_KEYUP));
+        }
+    }
+    send(&v);
 }
 
 pub fn move_to(p: P) {

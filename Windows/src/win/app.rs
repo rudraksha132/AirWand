@@ -201,10 +201,6 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                     PostQuitMessage(0);
                     return LRESULT(0);
                 }
-                // A Bluetooth failure is shown once in a window; Wi-Fi may still work, so say so.
-                if let Some(e) = a.receiver.error.lock().unwrap().clone() {
-                    log::alert(&format!("{e}\n\nBluetooth is not working. The Wi-Fi link can still be used if it is turned on."));
-                }
                 let n = a.receiver.aims();
                 let prev = a.last_aims.swap(n, Ordering::Relaxed);
                 a.aim_rate.store(n.saturating_sub(prev), Ordering::Relaxed);

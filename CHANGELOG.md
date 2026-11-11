@@ -3,6 +3,17 @@
 What changed in the Windows app and the phone page, newest first.
 
 ## Latest
+- New aiming feel: a smaller turn reaches every corner, and up/down needs the same angle as left/right.
+- Edge push: tilt a little past the edge zone and the cursor keeps drifting that way until the phone returns to its
+  starting angle. Works in every direction; strength and zone are adjustable.
+- Sensitivity on the phone (gear button): Sensitivity, Edge push and Scroll speed sliders with Precise / Normal / Fast
+  presets. Sensitivity also scales trackpad speed; trackpad mode turns aim and edge push off, and switching modes never
+  makes the cursor jump.
+- The phone remembers the paired PC and hides the pairing code until the PC is waiting for approval
+  ("Show code" and "Forget this PC" are in the live screen).
+- Keyboard button on the phone: type text and press Backspace, Enter, Tab, Esc, Delete and arrows (with Ctrl/Shift) on the
+  PC. Off until "Allow typing from phones" is switched on in the panel; approved phones only, rate limited, stops on Pause.
+- Bluetooth trouble no longer opens a window (it showed again every 10 minutes); it stays in the panel and tray tip.
 - Installer (`AirWand-Setup.exe`): installs for the current user without admin, appears in Settings > Apps with
   publisher and uninstall, Start Menu entry, optional start with Windows, optional firewall rule.
 - Phone link without a port (`http://192.168.x.x`, port 80) and `http://airwand.local`; QR code in the panel.

@@ -15,6 +15,8 @@ pub struct Settings {
     pub require_encryption: bool,
     /// Let phones connect over Wi-Fi (the web server listens on the network, not just this PC). Needs a restart.
     pub wifi_enabled: bool,
+    /// Let an approved phone type text and press keys on this PC. Off until the user turns it on.
+    pub typing: bool,
     pub trusted: Vec<String>,
     /// Control-panel window size and position, saved whenever the user changes them (0 = not saved yet).
     pub win_w: u32,
@@ -26,7 +28,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { range_idx: 1, smooth_idx: 0, inv_x: false, inv_y: false, predict: true, require_encryption: false, wifi_enabled: true, trusted: vec![], win_w: 0, win_h: 0, win_x: 0, win_y: 0, win_pos: false }
+        Self { range_idx: 1, smooth_idx: 0, inv_x: false, inv_y: false, predict: true, require_encryption: false, wifi_enabled: true, typing: false, trusted: vec![], win_w: 0, win_h: 0, win_x: 0, win_y: 0, win_pos: false }
     }
 }
 

@@ -39,6 +39,16 @@ fn is_bad(c: char) -> bool {
             | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206F}' | '\u{FEFF}')
 }
 
+/// Text typed on the phone: control and bidi/format characters removed, capped, and NOT trimmed (spaces matter).
+pub fn typed(s: &str, max: usize) -> String {
+    s.chars().filter(|c| !is_bad(*c)).take(max).collect()
+}
+
+/// A special-key packet: code 1..=13, modifiers ctrl/alt/shift only.
+pub fn key(code: u8, mods: u8) -> bool {
+    (1..=13).contains(&code) && mods <= 7
+}
+
 /// Strips control and bidi/format characters and caps the length, so a device cannot spoof the Allow dialog.
 pub fn clean(s: &str, max: usize) -> String {
     s.chars().filter(|c| !is_bad(*c)).take(max).collect::<String>().trim().to_string()

@@ -11,6 +11,9 @@
 //!   info    09  battery:u8 (255 = unknown) model:utf8
 //!   move    0A  dx:f32 dy:f32
 //!   aimpair 0B  t0:u32 (ms) az0:f32 el0:f32 dt:u8 (ms) daz:i16 (0.01 deg) del:i16 (0.01 deg)
+//!   tune    0C  sens:u8 push:u8 scroll:u8   each 1..100 (push 0..100; 0 = edge push off)
+//!   text    0D  utf8, at most 120 characters, typed at the PC's keyboard focus
+//!   key     0E  code:u8 (1 backspace, 2 enter, 3 tab, 4 esc, 5 left, 6 right, 7 up, 8 down, 9 delete, 10 home, 11 end, 12 pgup, 13 pgdn) mods:u8 (1 ctrl, 2 alt, 4 shift)
 //! Status (PC -> client, read + notify): state:u8 (0 waiting, 1 approved, 2 denied) paused:u8 pc_name:utf8
 use crate::validate;
 
@@ -35,6 +38,9 @@ pub enum Event {
     Move(f64, f64),
     Center,
     Pause(bool),
+    Tune { sens: u8, push: u8, scroll: u8 },
+    Text(String),
+    Key { code: u8, mods: u8 },
 }
 
 #[derive(Debug, PartialEq)]
@@ -161,6 +167,25 @@ pub fn parse(data: &[u8]) -> Packet {
             (Some(_), Some(_)) => Packet::Reject("delta out of range"),
             _ => Packet::Reject("short delta"),
         },
+        12 => match (r.u8(), r.u8(), r.u8()) {
+            (Some(sens), Some(push), Some(scroll)) if (1..=100).contains(&sens) && push <= 100 && (1..=100).contains(&scroll) => {
+                Packet::Input(vec![Event::Tune { sens, push, scroll }])
+            }
+            (Some(_), Some(_), Some(_)) => Packet::Reject("tune out of range"),
+            _ => Packet::Reject("short tune"),
+        },
+        13 => {
+            let t = validate::typed(&r.rest(), 120);
+            if t.is_empty() {
+                Packet::Reject("empty text")
+            } else {
+                Packet::Input(vec![Event::Text(t)])
+            }
+        }
+        14 => match (r.u8(), r.u8()) {
+            (Some(code), Some(mods)) if validate::key(code, mods) => Packet::Input(vec![Event::Key { code, mods }]),
+            _ => Packet::Reject("bad key"),
+        },
         7 => Packet::Input(vec![Event::Center]),
         8 => Packet::Input(vec![Event::Pause(r.u8().unwrap_or(0) != 0)]),
         _ => Packet::Reject("unknown kind"),
@@ -230,6 +255,34 @@ mod tests {
                 assert_eq!(kind, 1);
                 assert_eq!(name, "");
             }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_tune_text_and_key() {
+        assert_eq!(parse(&[12, 55, 40, 50]), Packet::Input(vec![Event::Tune { sens: 55, push: 40, scroll: 50 }]));
+        assert!(matches!(parse(&[12, 0, 40, 50]), Packet::Reject(_)));
+        assert!(matches!(parse(&[12, 50, 101, 50]), Packet::Reject(_)));
+        assert!(matches!(parse(&[12, 50]), Packet::Reject(_)));
+        assert_eq!(parse(b"\x0dhi there"), Packet::Input(vec![Event::Text("hi there".into())]));
+        assert_eq!(parse("\u{d}a\u{202e}b\nc é".as_bytes()), Packet::Input(vec![Event::Text("abc é".into())]));
+        assert!(matches!(parse(&[13]), Packet::Reject(_)));
+        assert!(matches!(parse(&[13, 0x0a, 0x00]), Packet::Reject(_)));
+        assert_eq!(parse(&[14, 2, 0]), Packet::Input(vec![Event::Key { code: 2, mods: 0 }]));
+        assert_eq!(parse(&[14, 5, 5]), Packet::Input(vec![Event::Key { code: 5, mods: 5 }]));
+        assert!(matches!(parse(&[14, 0, 0]), Packet::Reject(_)));
+        assert!(matches!(parse(&[14, 14, 0]), Packet::Reject(_)));
+        assert!(matches!(parse(&[14, 2, 8]), Packet::Reject(_)));
+        assert!(matches!(parse(&[14, 2]), Packet::Reject(_)));
+    }
+
+    #[test]
+    fn text_is_capped_at_120_characters() {
+        let mut b = vec![13u8];
+        b.extend("é".repeat(300).as_bytes());
+        match parse(&b) {
+            Packet::Input(ev) => assert_eq!(ev, vec![Event::Text("é".repeat(120))]),
             other => panic!("{other:?}"),
         }
     }
