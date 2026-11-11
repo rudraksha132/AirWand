@@ -102,7 +102,7 @@
           <div class="linkbox" id="linkBox" style="display:none">
             <img id="qr" class="qr" width="176" height="176" alt="QR code with the phone link">
             <div class="linkinfo">
-              <div class="seg" id="kind"><button data-k="name">Short name</button><button data-k="ip">IP address</button></div>
+              <div class="seg" id="kind"></div>
               <div class="url" id="linkUrl"></div>
               <div class="actions"><button id="copyLink">Copy link</button></div>
               <div class="muted" id="kindHint"></div>
@@ -272,8 +272,8 @@ function render(s) {
 }
 
 // The phone link: a QR code plus the address it holds, as a short name (airwand.local) or the IP address.
-let kind = 'name', shownLink = '';
-try { kind = localStorage.getItem('linkKind') || 'name'; } catch { /* storage may be blocked */ }
+let kind = 'ip0', shownLink = '', kindKey = '';
+try { kind = localStorage.getItem('linkKind') || 'ip0'; } catch { /* storage may be blocked */ }
 function copyText(btn, text, label) {
   if (!navigator.clipboard) return;
   navigator.clipboard.writeText(text).then(() => { btn.textContent = 'Copied'; setTimeout(() => btn.textContent = label, 1200); });
@@ -285,16 +285,23 @@ function renderLink(s) {
   else if (!s.wifi.listening) hint.textContent = s.wifi.error ? 'The Wi-Fi link could not start.' : 'Starting…';
   else if (!ips.length && !names.length) hint.textContent = 'No network address found. Connect this PC to Wi-Fi or Ethernet.';
   else hint.textContent = 'Phone and PC on the same Wi-Fi. Scan the code with the phone camera, or type the address in Chrome:';
-  const have = { name: names[0], ip: ips[0] };
-  if (!ready || (!have.name && !have.ip)) { box.style.display = 'none'; $('androidHelp').style.display = 'none'; shownLink = ''; return; }
-  let k = have[kind] ? kind : (have.name ? 'name' : 'ip');
-  const url = have[k];
+  // one choice per address: each real network adapter's IP (VPN tunnels are left out by the app), plus the short name
+  const opts = ips.map((u, i) => ({ k: 'ip' + i, label: ips.length > 1 ? u.replace('http://', '').split(':')[0] : 'IP address', url: u }));
+  if (names[0]) opts.push({ k: 'name', label: 'Short name', url: names[0] });
+  if (!ready || !opts.length) { box.style.display = 'none'; $('androidHelp').style.display = 'none'; shownLink = ''; return; }
+  const cur = opts.find(o => o.k === kind) || opts[0];
+  const k = cur.k, url = cur.url;
   box.style.display = '';
-  for (const b of $('kind').children) { b.classList.toggle('sel', b.dataset.k === k); b.disabled = !have[b.dataset.k]; }
+  const key = opts.map(o => o.k + o.label).join('|');
+  if (key !== kindKey) {
+    kindKey = key; $('kind').textContent = '';
+    for (const o of opts) { const b = el('button', null, o.label); b.dataset.k = o.k; $('kind').append(b); }
+  }
+  for (const b of $('kind').children) b.classList.toggle('sel', b.dataset.k === k);
   $('linkUrl').textContent = url;
   $('kindHint').textContent = k === 'name'
     ? 'Stays the same when the PC address changes. Works on iPhone and Android 12 or newer. If it does not open, use the IP address.'
-    : 'Works on every phone, but changes if the router gives this PC a new address.' + (s.wifi.nameError ? ' ' + s.wifi.nameError : '');
+    : 'Works on every phone, but changes if the router gives this PC a new address. On a VPN, allow local network (LAN) access in the VPN app, or phones cannot connect.' + (s.wifi.nameError ? ' ' + s.wifi.nameError : '');
   if (url !== shownLink) { shownLink = url; $('qr').src = '/api/qr?u=' + encodeURIComponent(url); }
   // Chrome compares the flag with the exact origin, port included, so list every way the phone could open the page.
   const origins = [];
@@ -307,7 +314,7 @@ function renderLink(s) {
   $('copyOrigin').onclick = () => copyText($('copyOrigin'), flag, 'Copy all addresses for the setting');
 }
 $('kind').addEventListener('click', e => {
-  const b = e.target.closest('button'); if (!b || b.disabled) return;
+  const b = e.target.closest('button'); if (!b) return;
   kind = b.dataset.k; try { localStorage.setItem('linkKind', kind); } catch { /* ignore */ }
   if (st) renderLink(st);
 });

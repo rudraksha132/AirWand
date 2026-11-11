@@ -2,6 +2,7 @@
 //! Everything Windows-specific lives in `src/win/`.
 pub mod dns;
 pub mod geometry;
+pub mod lan;
 pub mod mdns;
 pub mod mux;
 pub mod net;

@@ -98,22 +98,24 @@ pub fn start(pc_name: &str) -> Arc<Mdns> {
                 return;
             }
         };
-        let mut joined: Option<Ipv4Addr> = None;
+        let mut joined: Vec<Ipv4Addr> = Vec::new();
         let mut checked = Instant::now() - Duration::from_secs(60);
         let mut buf = [0u8; 1500];
         loop {
             // follow the network: join the group on the current LAN interface, claim a name again after a change
             if checked.elapsed() >= Duration::from_secs(5) {
                 checked = Instant::now();
-                let ip = server::lan_ipv4();
-                if ip != joined {
-                    if let Some(ip) = ip {
-                        let _ = opts.join_multicast_v4(&GROUP, &ip);
-                        let _ = opts.set_multicast_if_v4(&ip);
+                let ips = server::lan_ipv4_list();
+                if ips != joined {
+                    for ip in &ips {
+                        let _ = opts.join_multicast_v4(&GROUP, ip);
                     }
-                    joined = ip;
+                    if let Some(ip) = ips.first() {
+                        let _ = opts.set_multicast_if_v4(ip);
+                    }
+                    joined = ips.clone();
                     *st.name.lock().unwrap() = None;
-                    if let Some(ip) = ip {
+                    if let Some(&ip) = ips.first() {
                         let free = names.iter().find(|n| name_is_free(&udp, n, ip)).cloned();
                         match &free {
                             Some(n) => {

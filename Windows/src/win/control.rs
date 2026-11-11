@@ -158,6 +158,7 @@ fn start_lan_extras(ctl: &Arc<Control>) {
 
 /// Starts the web server (Wi-Fi link + control panel) on its own thread.
 pub fn start_server(ctl: Arc<Control>, lan: bool) {
+    server::set_lan_provider(super::netinfo::lan_ipv4s);
     let _ = std::thread::Builder::new().name("airwand-server".into()).spawn(move || match server::bind(PORT, lan) {
         Ok(listener) => {
             ctl.wifi_listening.store(true, Ordering::Relaxed);

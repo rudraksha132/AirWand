@@ -82,13 +82,29 @@ pub fn local_ip_for(peer: IpAddr) -> Option<Ipv4Addr> {
     }
 }
 
-/// This PC's address on the local network (the route a packet to the internet would take; nothing is sent).
+static LAN_PROVIDER: std::sync::OnceLock<fn() -> Vec<Ipv4Addr>> = std::sync::OnceLock::new();
+
+/// Registers the platform's list of usable network addresses (on Windows: real Wi-Fi and Ethernet adapters,
+/// so a VPN tunnel address is never offered to the phone).
+pub fn set_lan_provider(f: fn() -> Vec<Ipv4Addr>) {
+    let _ = LAN_PROVIDER.set(f);
+}
+
+/// Addresses on which a phone on the same network can reach this PC.
+pub fn lan_ipv4_list() -> Vec<Ipv4Addr> {
+    match LAN_PROVIDER.get() {
+        Some(f) => f(),
+        // no provider: the route a packet to the internet would take (nothing is sent). A VPN can skew this.
+        None => local_ip_for(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))).into_iter().collect(),
+    }
+}
+
 pub fn lan_ipv4() -> Option<Ipv4Addr> {
-    local_ip_for(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)))
+    lan_ipv4_list().into_iter().next()
 }
 
 pub fn lan_ips() -> Vec<String> {
-    lan_ipv4().map(|ip| ip.to_string()).into_iter().collect()
+    lan_ipv4_list().iter().map(|ip| ip.to_string()).collect()
 }
 
 fn reply(s: &mut TcpStream, status: &str, ctype: &str, body: &[u8], extra: &[(&str, &str)]) {
