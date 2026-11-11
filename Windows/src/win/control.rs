@@ -14,8 +14,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 pub const PORT: u16 = 47821;
-/// Also tried when Wi-Fi is on, so the phone link can be `http://airwand.local` with no port. Skipped if something else owns it.
-pub const SHORT_PORT: u16 = 80;
 pub static GAME_HTML: &[u8] = include_bytes!("../../game.html");
 
 pub struct Control {
@@ -151,19 +149,8 @@ fn assets() -> Assets {
     }
 }
 
-/// The nicer phone links: the same web server on port 80, and the `airwand.local` name.
-/// Both are optional; the plain `http://<ip>:47821` link always works.
+/// The short name `airwand.local`. Optional; the plain `http://<ip>:47821` link always works.
 fn start_lan_extras(ctl: &Arc<Control>) {
-    let c2 = ctl.clone();
-    let _ = std::thread::Builder::new().name("airwand-server80".into()).spawn(move || match server::bind(SHORT_PORT, true) {
-        Ok(listener) => {
-            c2.short_port.store(true, Ordering::Relaxed);
-            log::write(&format!("web server also on port {SHORT_PORT}"));
-            let be: Arc<dyn Backend> = c2.clone();
-            server::serve(listener, be, assets(), PORT);
-        }
-        Err(e) => log::write(&format!("port {SHORT_PORT} not available ({e}); phone links keep the :{PORT} port")),
-    });
     let m = mdns::start(&ctl.receiver.pc_name);
     *ctl.mdns.lock().unwrap() = Some(m);
     log::write("short name responder started");
@@ -194,7 +181,7 @@ impl Backend for Control {
         let s = self.settings.lock().unwrap().clone();
         let ble_error = self.receiver.error.lock().unwrap().clone();
         let wifi_error = self.wifi_error.lock().unwrap().clone();
-        let short = self.short_port.load(Ordering::Relaxed);
+        let short = false; // links always carry the port: port 80 can be blocked or taken, 47821 is the one that is known to work
         let link = |host: &str| if short { format!("http://{host}") } else { format!("http://{host}:{PORT}") };
         let urls: Vec<String> = if s.wifi_enabled { server::lan_ips().iter().map(|ip| jstr(&link(ip))).collect() } else { Vec::new() };
         let (name, name_error) = match self.mdns.lock().unwrap().as_ref() {
