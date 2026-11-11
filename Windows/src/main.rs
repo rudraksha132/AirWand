@@ -6,7 +6,7 @@ mod win;
 #[cfg(windows)]
 fn main() {
     if let Err(e) = win::run() {
-        win::log::write(&format!("fatal: {e}"));
+        win::log::alert_and_wait(&format!("AirWand could not start: {e}"));
     }
 }
 

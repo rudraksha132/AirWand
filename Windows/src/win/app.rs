@@ -54,6 +54,7 @@ fn ask_user(name: &str, code: &str) -> bool {
 }
 
 pub fn run() -> Result<()> {
+    log::install_panic_alert();
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let _mutex = CreateMutexW(None, true, windows::core::w!("AirWand.SingleInstance"))?;
@@ -199,6 +200,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                     let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
                     PostQuitMessage(0);
                     return LRESULT(0);
+                }
+                // A Bluetooth failure is shown once in a window; Wi-Fi may still work, so say so.
+                if let Some(e) = a.receiver.error.lock().unwrap().clone() {
+                    log::alert(&format!("{e}\n\nBluetooth is not working. The Wi-Fi link can still be used if it is turned on."));
                 }
                 let n = a.receiver.aims();
                 let prev = a.last_aims.swap(n, Ordering::Relaxed);

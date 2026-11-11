@@ -41,6 +41,7 @@
   .chip.on { color:var(--fg); } .chip.on::before { background:var(--ok); }
   .chip.wait { color:var(--fg); } .chip.wait::before { background:var(--warn); }
   .chips button { padding:2px 10px; font-size:12px; border-radius:999px; }
+  #diag { margin:0; font:11px/1.5 var(--mono); color:var(--dim); white-space:pre-wrap; }
   .code { display:flex; justify-content:space-between; align-items:center; border:1px solid var(--line); border-radius:8px; padding:9px 14px; color:var(--dim); font-size:13px; }
   .code b { font:600 20px var(--mono); letter-spacing:.14em; color:var(--fg); }
 </style>
@@ -69,6 +70,7 @@
   <div class="row seg"><button id="mPointer" class="sel">Pointer</button><button id="mTrack">Trackpad</button></div>
   <div id="pad"><div><div id="padText">Tap to click · hold to drag</div><p style="font-size:13px">Point the top edge at the screen</p></div></div>
   <div id="scroll">Slide here to scroll</div>
+  <pre id="diag"></pre>
   <div class="row"><button id="bRight">Right click</button><button id="bCenter">Center</button><button id="bPause">Pause</button></div>
 </div>
 <div id="stat"></div>
@@ -102,7 +104,14 @@ async function pairCode() {
 }
 pairCode().then(c => { $('code').textContent = c; }).catch(() => { $('codeBox').style.display = 'none'; });
 setInterval(() => {
+  rOrient = nOrient; rMotion = nMotion; nOrient = nMotion = 0;
   const up = links.filter(l => l.up);
+  const pcs = state === 1 ? 'approved' : state === 0 ? 'waiting for Allow on the PC' : state === 2 ? 'denied' : 'no answer yet';
+  $('diag').textContent = [
+    'link: ' + (up.map(l => l.name).join(' + ') || 'none') + ' | PC: ' + pcs,
+    'sensors: ' + (sensing ? `motion ${rMotion}/s, orientation ${rOrient}/s` : 'off') + (window.isSecureContext ? '' : ' | page is not HTTPS'),
+    permissionNote, links.map(l => l.err && l.enabled ? l.name + ': ' + l.err : '').filter(Boolean).join(' | ')
+  ].filter(Boolean).join('\n');
   $('stat').textContent = !up.length ? '' : sensing ? 'Aim/s: ' + up.map(l => `${l.name} ${l.sent}`).join(' · ') : up.map(l => l.name).join(' + ');
   for (const l of links) l.sent = 0;
 }, 1000);
@@ -184,7 +193,7 @@ async function pump(l) {
     if (l.write && (l.q.length || l.aimDirty)) setTimeout(() => pump(l), 0);
   }
 }
-function aimAll() { for (const l of links) if (l.up) { l.aimDirty = true; pump(l); } }
+function aimAll() { for (const l of links) if (l.up) { if (state === 1) l.aimDirty = true; pump(l); } }   // aim is sent only once the PC has approved this phone
 
 function handleStatus(l, v) {
   if (!v || v.byteLength < 2) return;
@@ -342,7 +351,9 @@ function stop() {
 const D2R = Math.PI / 180;
 let up = null, az = 0, lastT = null, sensing = false, aimOn = true, paused = false, gotMotion = false;
 
+let nOrient = 0, nMotion = 0, rOrient = 0, rMotion = 0;
 function onOrient(e) {
+  nOrient++;
   if (e.beta == null || e.gamma == null) return;
   const b = e.beta * D2R, g = e.gamma * D2R;
   up = [-Math.sin(g) * Math.cos(b), Math.sin(b), Math.cos(g) * Math.cos(b)];   // "up" in device axes
@@ -350,6 +361,7 @@ function onOrient(e) {
 
 let bias = [0, 0, 0], stillFor = 0;
 function onMotion(e) {
+  nMotion++;
   const r = e.rotationRate;
   if (!r || r.alpha == null) return;
   const w = [r.beta, r.gamma, r.alpha];
@@ -380,10 +392,16 @@ function onMotion(e) {
   aimAll();
 }
 
+// iPhone answers granted or denied. Newer Chrome also has requestPermission and may answer "prompt" or throw:
+// only an explicit "denied" stops us; anything else carries on, and the 3 second no-data check reports real problems.
+let permissionNote = '';
 async function sensorPermission() {
   for (const C of [window.DeviceMotionEvent, window.DeviceOrientationEvent]) {
     if (C && typeof C.requestPermission === 'function') {
-      if ((await C.requestPermission()) !== 'granted') throw new Error('Motion permission denied');
+      let r = 'error';
+      try { r = await C.requestPermission(); } catch (e) { permissionNote = 'requestPermission failed: ' + (e && e.message); }
+      if (r === 'denied') throw new Error('Motion permission denied. In Chrome: Settings > Site settings > Motion sensors > Allow, then reload.');
+      if (r !== 'granted') permissionNote = 'permission answer: ' + r;
     }
   }
 }
@@ -399,7 +417,7 @@ function stopSensors() {
   removeEventListener('devicemotion', onMotion);
   up = null; for (const l of links) l.aimDirty = false; s1 = s2 = null;
 }
-function updateSensors() { (state === 1 && aimOn && !paused && !pcPaused) ? startSensors() : stopSensors(); }
+function updateSensors() { ((state === 0 || state === 1) && aimOn && !paused && !pcPaused) ? startSensors() : stopSensors(); }
 
 // ---------- touch UI ----------
 let pressing = false, trackpad = false, downXY = null, moved = false, lastXY = null;

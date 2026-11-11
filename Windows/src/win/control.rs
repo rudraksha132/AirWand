@@ -183,7 +183,7 @@ pub fn start_server(ctl: Arc<Control>, lan: bool) {
         }
         Err(e) => {
             let msg = format!("Could not start the Wi-Fi link and control panel on port {PORT}: {e}");
-            log::write(&msg);
+            log::alert(&format!("{msg}\n\nAnother program may be using port {PORT}. Close it (or restart the PC) and start AirWand again. Phones cannot connect over Wi-Fi until then."));
             *ctl.wifi_error.lock().unwrap() = Some(msg);
         }
     });

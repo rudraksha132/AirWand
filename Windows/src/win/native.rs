@@ -131,9 +131,19 @@ fn absolute(p: P) -> INPUT {
     mouse(nx, ny, 0, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK)
 }
 
+/// Count of SendInput calls in a row that Windows refused (0 events accepted).
+static REFUSED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 fn send(inputs: &[INPUT]) {
-    unsafe {
-        SendInput(inputs, size_of::<INPUT>() as i32);
+    use std::sync::atomic::Ordering;
+    let done = unsafe { SendInput(inputs, size_of::<INPUT>() as i32) };
+    if done == 0 {
+        // Windows refuses input while an administrator window or a UAC prompt is in front, or the screen is locked.
+        if REFUSED.fetch_add(1, Ordering::Relaxed) + 1 == 200 {
+            super::log::alert("Windows is not letting AirWand move the cursor. This happens while a program running as administrator, a UAC prompt or the lock screen is in front. Click on a normal window, or start AirWand as administrator.");
+        }
+    } else {
+        REFUSED.store(0, Ordering::Relaxed);
     }
 }
 
