@@ -19,7 +19,7 @@ Nothing inside the program can change that. These are the real fixes, best first
    Signed builds usually lose the Chrome warning at once. SmartScreen can still say "unrecognized app" for a
    few days until reputation builds, unless the certificate is Trusted Signing or EV.
 
-2. **Ship the installer, not a bare exe.** `Windows/installer/AirWand.iss` makes `AirWand-Setup-x.y.z.exe`:
+2. **Ship the installer, not a bare exe.** `Windows/installer/AirWand.iss` makes `AirWand-Setup.exe`:
    per-user install without admin rights, Start Menu entry, optional start with Windows, an entry in
    Settings > Apps so it can be uninstalled, and an optional firewall rule. It is the shape Windows expects
    from a real app. Signing it is what removes the warning.

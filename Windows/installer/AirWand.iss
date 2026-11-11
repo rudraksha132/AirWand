@@ -14,7 +14,11 @@ AppId={{8C0B6C2E-4A53-4E7B-9D0A-3B5F7C1A2E64}
 AppName=AirWand
 AppVersion={#AppVersion}
 AppVerName=AirWand {#AppVersion}
-AppPublisher=AirWand contributors
+AppPublisher=AirWand
+AppPublisherURL=https://github.com/rudraksha132
+AppSupportURL=https://github.com/rudraksha132
+AppCopyright=Copyright (c) 2026 Rudraksha. MIT license
+AppComments=Use your phone as a pointer for this PC
 VersionInfoVersion={#AppVersion}
 VersionInfoProductName=AirWand
 VersionInfoDescription=AirWand setup
@@ -28,7 +32,8 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.19041
 OutputDir=..\dist
-OutputBaseFilename=AirWand-Setup-{#AppVersion}
+OutputBaseFilename=AirWand-Setup
+UninstallDisplayName=AirWand
 SetupIconFile=..\AppIcon.ico
 UninstallDisplayIcon={app}\{#AppExe}
 LicenseFile=..\..\LICENSE
@@ -47,6 +52,8 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; Flags: unchecked
 [Files]
 Source: "..\target\release\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\AUTHORS.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\CHANGELOG.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\Web\Geist-OFL.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]

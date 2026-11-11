@@ -1,6 +1,6 @@
 name: Release
 # Builds the Windows app, wraps it in an installer, signs both when signing secrets exist, and publishes them.
-# Run it by pushing a tag such as v2.6.0, or by hand from the Actions tab.
+# Run it by pushing a tag such as v1, or by hand from the Actions tab.
 on:
   push:
     tags: ["v*"]
@@ -81,8 +81,8 @@ jobs:
         shell: pwsh
         run: |
           $v = "${{ steps.ver.outputs.version }}"
-          $z = "Windows\dist\AirWand-$v-portable.zip"
-          Compress-Archive -Path Windows\target\release\airwand.exe, LICENSE -DestinationPath $z
+          $z = "Windows\dist\AirWand-portable.zip"
+          Compress-Archive -Path Windows\target\release\airwand.exe, LICENSE, AUTHORS.md, CHANGELOG.md -DestinationPath $z
           Get-ChildItem Windows\dist\AirWand-* | ForEach-Object {
             $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
             "$h  $($_.Name)"
@@ -92,8 +92,8 @@ jobs:
       - uses: actions/attest-build-provenance@v2
         with:
           subject-path: |
-            Windows/dist/AirWand-Setup-*.exe
-            Windows/dist/AirWand-*-portable.zip
+            Windows/dist/AirWand-Setup.exe
+            Windows/dist/AirWand-portable.zip
 
       - uses: actions/upload-artifact@v4
         with:

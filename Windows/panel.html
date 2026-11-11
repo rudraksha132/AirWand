@@ -299,9 +299,9 @@ function renderLink(s) {
   }
   for (const b of $('kind').children) b.classList.toggle('sel', b.dataset.k === k);
   $('linkUrl').textContent = url;
-  $('kindHint').textContent = k === 'name'
+  $('kindHint').textContent = (s.wifi.short ? 'No port needed. If it does not open, add :' + s.wifi.port + ' to the end. ' : '') + (k === 'name'
     ? 'Stays the same when the PC address changes. Works on iPhone and Android 12 or newer. If it does not open, use the IP address.'
-    : 'Works on every phone, but changes if the router gives this PC a new address. On a VPN, allow local network (LAN) access in the VPN app, or phones cannot connect.' + (s.wifi.nameError ? ' ' + s.wifi.nameError : '');
+    : 'Works on every phone, but changes if the router gives this PC a new address. On a VPN, allow local network (LAN) access in the VPN app, or phones cannot connect.' + (s.wifi.nameError ? ' ' + s.wifi.nameError : ''));
   if (url !== shownLink) { shownLink = url; $('qr').src = '/api/qr?u=' + encodeURIComponent(url); }
   // Chrome compares the flag with the exact origin, port included, so list every way the phone could open the page.
   const origins = [];

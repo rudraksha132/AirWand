@@ -68,12 +68,12 @@ With a free Apple ID, apps you install from Xcode stop opening after 7 days; jus
 
 This repo also has a Windows receiver (`Windows/`, Rust) and a phone web page (`Web/`) that replace the Mac app and iPhone app. Same protocol, same Bluetooth service, same aiming maths. The Mac and iPhone code is untouched.
 
-- **Windows receiver**: tray app. Needs Windows 10 2004+ and a Bluetooth 4.0+ adapter that supports the **peripheral role** (the app tells you if it does not). Install with `AirWand-Setup-x.y.z.exe` from the Releases page, or build with `cd Windows && cargo build --release` (needs Rust, MSVC build tools); the result is one `airwand.exe` with no runtime to install. Tray menu: Pause, Center, Speed, Smoothing, Invert, Forget devices, live aim rate, log, the game. The notch panel is Mac-only.
+- **Windows receiver**: tray app. Needs Windows 10 2004+ and a Bluetooth 4.0+ adapter that supports the **peripheral role** (the app tells you if it does not). Install with `AirWand-Setup.exe` from the Releases page, or build with `cd Windows && cargo build --release` (needs Rust, MSVC build tools); the result is one `airwand.exe` with no runtime to install. Tray menu: Pause, Center, Speed, Smoothing, Invert, Forget devices, live aim rate, log, the game. The notch panel is Mac-only.
 - **Phone page**: static `Web/index.html` using Web Bluetooth and the motion sensors. Both need HTTPS: publish `Web/` with the included GitHub Pages workflow (Settings > Pages > Source: GitHub Actions), then open the page on the phone. Works in **Chrome on Android**. Safari on iPhone has no Web Bluetooth: use the **Bluefy** browser, or the native iPhone app above.
 - **Pairing**: open the page, tap *Connect to PC*, pick your PC. The page shows a 6-digit code and the PC shows one in its Allow dialog. Click **Allow** only if they match.
 - Web BLE writes are limited to about 20 bytes and roughly one per connection interval, so expect 30 to 60 aim updates a second; the receiver still eases at 240 Hz. The page learns and removes gyro bias while the phone is still, to reduce yaw drift.
 
-### Connections: Wi-Fi and Bluetooth at the same time (v2.5)
+### Connections: Wi-Fi and Bluetooth at the same time
 
 - **Both links stay up.** The phone page opens Wi-Fi and Bluetooth together and keeps each one alive with its own reconnect loop (0.3 s backing off to 5 s, and an immediate retry when the page comes back to the foreground or the network returns). The page shows a chip for each link.
 - **Nothing pauses when a link drops.** Every aim sample, click, Center and Pause goes out on every live link. The PC merges them per device: the first copy to arrive wins and late or duplicate copies are dropped by their timestamps. Scroll and trackpad movement are not repeatable, so they use the primary link only (Wi-Fi, else Bluetooth).
@@ -86,7 +86,7 @@ This repo also has a Windows receiver (`Windows/`, Rust) and a phone web page (`
 ### Control panel and Wi-Fi link
 
 - **Control panel.** Starting `airwand.exe` (or double-clicking it again, or left-clicking the tray icon) opens a window with connection status, the address for your phone, paired devices with their pairing code, pause/center, speed, smoothing, invert, start-with-Windows, security switches and the log. It runs in Edge or Chrome app mode and is only reachable from this PC.
-- **Wi-Fi link.** The PC also serves the phone page on `http://airwand.local:47821` (see v2.6 below), or `http://<PC address>:47821` and talks to it over a WebSocket, using the same packets, pairing code and Allow prompt as Bluetooth. It needs no Bluetooth peripheral support, so it works on adapters that cannot be a BLE peripheral. Windows Firewall may ask to allow AirWand on private networks; allow it.
+- **Wi-Fi link.** The PC also serves the phone page on `http://airwand.local` (see below), or `http://<PC address>` and talks to it over a WebSocket, using the same packets, pairing code and Allow prompt as Bluetooth. It needs no Bluetooth peripheral support, so it works on adapters that cannot be a BLE peripheral. Windows Firewall may ask to allow AirWand on private networks; allow it.
 - **Which is used.** Both, at once (see v2.5 above). Wi-Fi is the primary link; Bluetooth is a hot standby.
 - **Android setting.** Chrome blocks motion sensors on `http://` pages, so once: open `chrome://flags/#unsafely-treat-insecure-origin-as-secure` on the phone, add the address shown in the panel, set Enabled, Relaunch. iPhone Safari needs HTTPS for motion sensors, so on iPhone use the native app or Bluefy over Bluetooth.
 - **Security.** The Wi-Fi link has the same trust model as plain Bluetooth: pairing needs your approval on the PC, but the device ID travels unencrypted, so only use it on a network you trust. "Allow phones over Wi-Fi" off keeps the server on this PC only. The panel API refuses requests from other machines, wrong Host or Origin headers, and requests without the `X-AirWand` header.
@@ -131,18 +131,18 @@ Inspired by [WatchPointer](https://github.com/umarz317/WatchPointer) by umarz317
 
 MIT
 
-### Look, window memory, antivirus (v2.5)
+### Look, window memory, antivirus
 
 - **Minimal layout in Geist.** The control panel and the phone page use Geist and Geist Mono (SIL Open Font License, see `Web/Geist-OFL.txt`), shipped inside the exe and served by the PC itself, so nothing is loaded from the internet. They follow the system light or dark setting.
 - **The control panel remembers its window.** Resize or move it and AirWand saves size and position (`settings.json`); the next start opens the same way.
 - **Fewer reasons for antivirus to complain.** The exe now has version info and a manifest. The Start with Windows switch writes the registry directly instead of running a hidden `reg.exe` on every start (that pattern looks like malware persistence to heuristics).
 - The remaining cause is that the exe is unsigned and new. Fixes, best first: sign it (free for open source via SignPath Foundation, or Azure Trusted Signing); report the false positive at https://www.microsoft.com/wdsi/filesubmission ; on your own PC, build locally (no download mark) or Properties > Unblock.
 
-### Installer, short links and QR codes (v2.6)
+### Installer, short links and QR codes
 
-- **Real Windows app.** `Windows/installer/AirWand.iss` builds `AirWand-Setup-x.y.z.exe` (Inno Setup): installs for the current user with no admin prompt, adds a Start Menu entry and an uninstall entry in Settings > Apps, offers start-with-Windows, and (when installed for all users) a firewall rule for private networks. The exe manifest also turns on long paths and UTF-8. The release workflow builds the exe, installer and portable zip, signs them when signing secrets are set, and publishes checksums and a build attestation.
+- **Real Windows app.** `Windows/installer/AirWand.iss` builds `AirWand-Setup.exe` (Inno Setup): installs for the current user with no admin prompt, adds a Start Menu entry and an uninstall entry in Settings > Apps, offers start-with-Windows, and (when installed for all users) a firewall rule for private networks. The exe manifest also turns on long paths and UTF-8. The release workflow builds the exe, installer and portable zip, signs them when signing secrets are set, and publishes checksums and a build attestation.
 - **The "potentially dangerous" warning** comes from the download being unsigned and new, not from the program. Only signing (plus time) removes it. See `docs/SIGNING.md` for the options: Azure Trusted Signing, SignPath (free for open source), a certificate, or the Microsoft Store.
-- **Links that stay put.** The PC now answers to **`http://airwand.local:47821`** (a built-in multicast DNS responder; it checks that no other device owns the name and otherwise uses `airwand-<pc name>.local`). Links keep the port (`:47821`): an extra port 80 listener was tried and dropped because a firewall or another program can block it. The Android motion-sensor setting needs the address once; a name never changes, so it keeps working, unlike an IP address. The plain IP link stays as the fallback for phones that cannot resolve `.local`.
+- **Links that stay put.** The PC now answers to **`http://airwand.local`** (a built-in multicast DNS responder; it checks that no other device owns the name and otherwise uses `airwand-<pc name>.local`). It also listens on port 80 when free, so links need no port number; if port 80 is taken, links carry `:47821`. The Android motion-sensor setting needs the address once; a name never changes, so it keeps working, unlike an IP address. The plain IP link stays as the fallback for phones that cannot resolve `.local`.
 - **On the PC**, `http://localhost:47821` opens the control panel (typing `http://localhost` also works). The phone page is always at `/phone`.
 - **QR codes.** The panel shows a QR code for the phone link (short name or IP address, your choice is remembered). Point the phone camera at it and tap the link. The code is drawn by AirWand itself (no internet, no library), served only to this PC.
 - Tests: `cargo test --lib` also covers the QR encoder, the DNS packets and the mDNS replies.

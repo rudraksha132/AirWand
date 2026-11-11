@@ -10,7 +10,7 @@ fn main() {
     res.set("InternalName", "airwand");
     res.set("OriginalFilename", "airwand.exe");
     res.set("CompanyName", "AirWand");
-    res.set("LegalCopyright", "AirWand contributors, MIT license");
+    res.set("LegalCopyright", "Copyright (c) 2026 Rudraksha. MIT license");
     res.set_manifest(
         r#"<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <assemblyIdentity type="win32" name="AirWand.AirWand" version="2.6.0.0"/>
