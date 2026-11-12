@@ -11,4 +11,5 @@ pub mod one_euro;
 pub mod protocol;
 pub mod qr;
 pub mod server;
+pub mod steady;
 pub mod validate;
