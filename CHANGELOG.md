@@ -3,6 +3,12 @@
 What changed in the Windows app and the phone page, newest first.
 
 ## Latest
+- Anti-wobble (new `steady.rs`, runs after the 1€ filter): the cursor now behaves like it has static friction. A small
+  self-calibrating dead-band holds it still against hand tremor and shrinks as you move faster, so quick moves stay
+  free and slow precise creeping still works. The tap or lift of your thumb no longer jolts the cursor: aim is held
+  until the jolt dies down, then the jolt is forgotten. Strength follows Smoothing (Low = gentle, Medium = normal,
+  High = strong); "Minimal (lowest latency)" leaves it off. In a simulated shaky hand it cuts held jitter 5-9x and
+  tap shift 2-7x with no added lag.
 - New aiming feel: a smaller turn reaches every corner, and up/down needs the same angle as left/right.
 - Edge push: tilt a little past the edge zone and the cursor keeps drifting that way until the phone returns to its
   starting angle. Works in every direction; strength and zone are adjustable.

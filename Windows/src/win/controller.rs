@@ -6,6 +6,7 @@ use airwand::aim::{self, Drift};
 use airwand::geometry::wrap;
 use airwand::one_euro::OneEuro;
 use airwand::protocol::Event;
+use airwand::steady::{Steady, SteadyOpts};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -14,6 +15,8 @@ use std::time::Instant;
 pub const RANGES: [f64; 3] = [18.0, 28.0, 40.0];
 pub const RANGE_NAMES: [&str; 3] = ["Fast (small turns)", "Normal", "Precise (big turns)"];
 pub const SMOOTH: [(f64, f64); 4] = [(2.5, 0.03), (1.2, 0.02), (0.6, 0.01), (6.0, 0.1)];
+/// Anti-wobble strength per smoothing preset (0 = off, so "Minimal" keeps the lowest latency).
+pub const STEADY: [u8; 4] = [1, 2, 3, 0];
 pub const SMOOTH_NAMES: [&str; 4] = ["Low", "Medium", "High", "Minimal (lowest latency)"];
 
 struct Calib {
@@ -23,6 +26,8 @@ struct Calib {
     last_el: f64,
     fx: OneEuro,
     fy: OneEuro,
+    steady: Steady,
+    steady_on: bool,
     drift: Drift,
     last_t: Option<f64>,
     /// Set after trackpad use: the next aim sample re-anchors so the cursor does not jump.
@@ -39,7 +44,9 @@ struct Tune {
 impl Calib {
     fn new(idx: usize) -> Self {
         let (mc, beta) = SMOOTH[idx.min(3)];
-        Self { az0: None, el0: None, last_az: 0.0, last_el: 0.0, fx: OneEuro::new(mc, beta), fy: OneEuro::new(mc, beta), drift: Drift::default(), last_t: None, anchor: false }
+        let lvl = STEADY[idx.min(3)];
+        let steady = Steady::new(SteadyOpts::level(lvl).unwrap_or_else(|| SteadyOpts::level(2).unwrap()));
+        Self { az0: None, el0: None, last_az: 0.0, last_el: 0.0, fx: OneEuro::new(mc, beta), fy: OneEuro::new(mc, beta), steady, steady_on: lvl > 0, drift: Drift::default(), last_t: None, anchor: false }
     }
 
     fn recenter(&mut self) {
@@ -47,6 +54,7 @@ impl Calib {
         self.el0 = Some(self.last_el);
         self.fx.reset();
         self.fy.reset();
+        self.steady.reset();
         self.drift = Drift::default();
         self.anchor = false;
     }
@@ -83,6 +91,11 @@ impl Controller {
             c.fx.beta = beta;
             c.fy.min_cutoff = mc;
             c.fy.beta = beta;
+            let lvl = STEADY[idx];
+            c.steady_on = lvl > 0;
+            if let Some(o) = SteadyOpts::level(lvl) {
+                c.steady.set_opts(o);
+            }
         }
     }
 
@@ -136,6 +149,8 @@ impl Controller {
                         dy = -dy;
                     }
                     let (fx, fy) = (c.fx.filter(dx, t), c.fy.filter(dy, t));
+                    // anti-wobble: stiction, tap-jolt freeze (off for "Minimal")
+                    let (fx, fy) = if c.steady_on { c.steady.step(t, fx, fy) } else { (fx, fy) };
                     let (u, v) = aim::norm(fx, fy, range);
                     if c.anchor {
                         c.anchor = false;
@@ -154,8 +169,18 @@ impl Controller {
                 }
             }
             Event::Pause(_) => {}
-            Event::Press(t) => self.engine.press(Some(t)),
-            Event::Release(_) => self.engine.release(),
+            Event::Press(t) => {
+                if let Some(c) = self.calib.lock().unwrap().get_mut(key) {
+                    c.steady.touch(true);
+                }
+                self.engine.press(Some(t))
+            }
+            Event::Release(_) => {
+                if let Some(c) = self.calib.lock().unwrap().get_mut(key) {
+                    c.steady.touch(false);
+                }
+                self.engine.release()
+            }
             Event::Right(t) => self.engine.right_click(Some(t)),
             Event::Scroll(dx, dy) => {
                 let g = aim::scroll_gain(self.tune.lock().unwrap().scroll);
@@ -166,6 +191,7 @@ impl Controller {
                 if let Some(c) = self.calib.lock().unwrap().get_mut(key) {
                     c.anchor = true;
                     c.last_t = None;
+                    c.steady.reset();
                 }
                 let sens = self.tune.lock().unwrap().sens;
                 let g = aim::trackpad_gain(sens, dx.hypot(dy));

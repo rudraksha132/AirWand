@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <title>AirWand</title>
 <link rel="icon" href="icon.png">
+<link rel="apple-touch-icon" href="icon.png">
 <style>
   @font-face { font-family:"Geist"; src:url(Geist.woff2) format("woff2"); font-weight:100 900; font-display:swap; }
   @font-face { font-family:"Geist Mono"; src:url(GeistMono.woff2) format("woff2"); font-weight:100 900; font-display:swap; }
@@ -63,7 +64,10 @@
 </head>
 <body>
 <div id="connect">
-  <h1>AirWand</h1>
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:2px">
+    <img src="icon.png" width="44" height="44" alt="AirWand" style="border-radius:10px;border:1px solid var(--line);flex-shrink:0">
+    <h1 style="margin:0">AirWand</h1>
+  </div>
   <p id="intro">Your phone becomes a pointer for your Windows PC. Start AirWand on the PC first.</p>
   <p id="warn"></p>
   <div id="insecure" class="note" style="display:none">
