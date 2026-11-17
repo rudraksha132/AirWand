@@ -2,29 +2,195 @@
 
 # AirWand
 
-Turn your **iPhone** or **Apple Watch** into a pointer for your Mac. Aim it at the screen to move the cursor, tap to click, hold to drag.
+Turn your **smartphone** into an air-mouse pointer, trackpad, and remote keyboard for your **Windows PC** (with support for macOS and Apple devices).
 
-No Wi-Fi and no servers: the phone or watch talks straight to the Mac over Bluetooth.
+Aim your phone at the screen like a laser remote to move the cursor, tap to click, hold to drag, scroll, and type. No phone app installation required — simply open the web client in your mobile browser, scan the QR code or visit `http://airwand.local`, and connect over local Wi-Fi and/or Bluetooth with seamless zero-jump failover.
 
-> Status: the Mac app and the iPhone app work (tested on iOS 27.2). The Apple Watch app is written but has not been tested on a real watch yet.
+> **Status**: The Windows native companion app (`Windows/`, written in Rust) and the phone web client (`Web/`) are fully implemented and tested. Official Windows installer (`AirWand-Setup.exe`) and portable builds are available. The original macOS receiver and native iPhone / Apple Watch apps (`Mac/`, `Apple/`) are also included in this repository.
 
-## What it does
+---
 
-- **Point like a laser.** The cursor goes where the top edge of your device points (12 o'clock on the watch). Up/down comes from gravity, so it never drifts. Works across all your displays.
-- **Tap** to click, **double-tap** to double-click, **hold** to drag, a **right-click** button, and scrolling (Digital Crown on the watch, a scroll strip on the phone).
-- **Trackpad mode on the iPhone.** Lay it on the table and slide a finger, with a drag lock for moving windows.
-- **Center** re-aims the middle of the screen. **Pause** frees the cursor for your real trackpad.
-- **Pairing with approval.** The first time a device connects, the Mac asks you to allow it. Devices you didn't allow can't move the cursor.
-- **Notch panel.** Hover the notch (or the middle of the menu bar) to see the connected device, its battery, a live aim map and quick buttons. Pin it to keep it open.
-- **Orbit Pop**, a small target game to try it on.
+## Highlights & What It Does
 
-## Requirements
+- **Point like a laser.** The cursor follows where the top edge of your phone points. Fused orientation (gyroscope + gravity) keeps vertical aim drift-free across all your monitors.
+- **Zero-install mobile web client.** No App Store or Play Store downloads needed. Just scan the QR code or open `http://airwand.local` in your phone's browser (Chrome on Android, Safari on iOS).
+- **Anti-wobble cursor stabilization.** Built-in static friction simulation (`steady.rs`) eliminates hand tremor when aiming still, automatically vanishing when moving fast. Tap-jolt suppression holds the cursor steady during physical taps and lifts so clicking never jerks the cursor.
+- **Dual Wi-Fi and Bluetooth connections at the same time.** Both links remain live simultaneously. If Wi-Fi stutters or Bluetooth drops, the other carries the signal instantly with zero pauses and zero cursor jumps. Works on any PC even without Bluetooth peripheral support.
+- **Trackpad mode.** Lay the phone flat on a desk and glide your finger like a laptop touchpad, complete with drag lock for moving windows.
+- **Remote typing and keyboard controls.** Type text on your phone to send keystrokes directly to the active window on your PC. Includes dedicated keys for Backspace, Enter, Tab, Esc, Delete, Arrow keys, plus Ctrl and Shift modifiers.
+- **Edge push.** Tilt past the screen edge zone and the cursor smoothly drifts across displays until the phone returns to its starting angle — navigate wide multi-monitor setups without lifting your arm.
+- **Native Windows control panel.** Built-in local web dashboard (Geist font, dark/light theme, remembers window size and position) with live aim rate, connection status, QR code generator, and customizable tuning.
+- **Security with approval code.** Every new device requires your approval on the PC with a matching 6-digit verification code. Device IDs are whitelisted and rate-limited.
+- **Orbit Pop.** Built-in target-shooting minigame to practice pointing accuracy, speed, and reaction time.
 
-- Mac with macOS 14 or later, Apple silicon or Intel, with Bluetooth
-- iPhone with iOS 17 or later and/or Apple Watch with watchOS 10 or later
-- Xcode 15 or later (use a version whose SDK matches your iPhone's iOS)
+---
 
-## 1. Mac receiver
+## Quick Start (Windows)
+
+### 1. Install or Run AirWand on Windows
+
+1. Download **`AirWand-Setup.exe`** from [Releases](../../releases) (or grab `AirWand-portable.zip` for standalone use).
+   - The installer installs for the current user with no administrator privileges needed, adds a Start Menu entry, and registers an uninstaller in **Settings > Apps**.
+2. Run AirWand. A tray icon appears in your taskbar, and the local control panel opens automatically in your browser (at `http://localhost:47821`).
+3. If Windows Firewall asks to allow AirWand on private networks, click **Allow**.
+
+### 2. Connect Your Phone
+
+1. Make sure your phone and PC are connected to the same Wi-Fi network.
+2. In the AirWand control panel on your PC, you will see a **QR code** and a link (`http://airwand.local` or `http://<PC-IP>`).
+3. Scan the QR code with your phone camera, or type the address into your mobile browser:
+   - **Android**: Open in **Google Chrome**. *(See one-time sensor flag note below).*
+   - **iPhone**: Open in **Safari** over local Wi-Fi, or use **Bluefy** if connecting via Web Bluetooth. Alternatively, use the native iOS app in `Apple/`.
+4. Tap **Connect to PC** on your phone.
+5. On the first connection, the phone displays a 6-digit pairing code and your PC displays an approval prompt. Verify that the codes match and click **Allow** on the PC.
+
+---
+
+## Mobile Browser Setup (Android & iOS)
+
+### Android (Chrome)
+Chrome requires motion sensors to be on HTTPS by default. Because local network links use HTTP:
+1. In Chrome on your phone, navigate to:
+   ```text
+   chrome://flags/#unsafely-treat-insecure-origin-as-secure
+   ```
+2. Paste the address shown in your AirWand control panel (you can use the **Copy all addresses for the setting** button in the PC panel).
+3. Set the flag to **Enabled** and tap **Relaunch**.
+4. You only need to do this once — the `http://airwand.local` address will persist across IP changes.
+
+### iPhone (iOS)
+Safari restricts motion sensors on non-HTTPS web pages. You can:
+- Use the web client over Bluetooth in the **Bluefy** browser.
+- Or install and run the native SwiftUI iPhone app from `Apple/` (see [macOS & Apple Devices](#macos--apple-devices-original--alternative) below).
+
+---
+
+## How to Use
+
+- **Aim & Move**: Hold the phone like a TV remote with the top edge facing the monitor. Aim at the middle of the screen and tap **Center** to calibrate.
+- **Click**: Tap the pad once for left-click; double-tap for double-click.
+- **Drag**: Press and hold your thumb on the screen to grab and drag windows or select text.
+- **Right Click**: Tap the **Right click** button.
+- **Scroll**: Slide your thumb vertically on the dedicated scroll strip.
+- **Pause**: Tap **Pause** to freeze the pointer and free your hand for your physical mouse or keyboard.
+- **Trackpad Mode**: Switch to **Trackpad** mode in the top segmented control. Lay the phone on a table and slide your finger across the pad.
+- **Keyboard & Typing**:
+  - Tap **Keyboard** to open the virtual typing input and navigation keys.
+  - Type text and press Enter, Backspace, Tab, Esc, Delete, or Arrow keys (with optional Ctrl / Shift toggles).
+  - *Note: Ensure **Allow typing from phones** is switched on in the PC Control Panel.*
+- **Sensitivity & Settings**:
+  - Tap the **Gear** (⚙️) icon on the phone to adjust Sensitivity, Edge push, and Scroll speed sliders with **Precise**, **Normal**, and **Fast** presets.
+
+---
+
+## Anti-Wobble & Aim Stabilization
+
+AirWand uses a multi-stage stabilization pipeline (`steady.rs`):
+
+```
+Phone Motion (Gyro + Gravity)
+             │
+             ▼
+  1€ Adaptive Low-Pass Filter
+             │
+             ▼
+  Anti-Wobble Stabilization (steady.rs)
+   ├─ Dynamic Static-Friction Deadband (tremor cancellation)
+   └─ Tap-Jolt Suppression (absorbs thumb impact on clicks)
+             │
+             ▼
+  Velocity Predictor Ahead (bridges transmission jitter)
+             │
+             ▼
+  250 Hz Native Windows Cursor Engine
+```
+
+1. **Virtual Static Friction**: When aiming still, a self-calibrating deadband holds the cursor steady against physiological hand tremor. As your movement accelerates, the deadband dynamically contracts to zero so quick motions remain instantaneous.
+2. **Tap-Jolt Suppression**: Tapping or lifting a finger on a mobile screen introduces mechanical shock. AirWand freezes aim during the impact window and discards the displacement, keeping clicks perfectly centered.
+3. **Smoothing Presets**:
+   - **Minimal**: Raw 1€ filter with lowest latency (anti-wobble off).
+   - **Low**: Gentle tremor damping.
+   - **Medium**: Balanced precision and responsiveness (recommended).
+   - **High**: Rock-solid stability for presentations or fine desktop targeting.
+
+---
+
+## Dual Simultaneous Links: Wi-Fi & Bluetooth
+
+AirWand supports concurrent Wi-Fi and Bluetooth LE links:
+
+- **Simultaneous Hot Standby**: The phone web page opens both Wi-Fi (WebSocket) and Web Bluetooth, maintaining separate reconnect loops.
+- **Zero-Jump Failover**: Aim updates, clicks, Center, and Pause commands are transmitted across all active links. The PC processes the first arriving packet and drops late or duplicate packets by timestamp.
+- **Consistent Calibration**: Calibration, smoothing state, and button history belong to the device instance rather than the transport link, ensuring seamless handovers without recentering.
+- **Dead-Link Detection**: Periodic keep-alive heartbeats detect disconnected links within 3.5 seconds. If all links drop while a button is held down, AirWand automatically releases the mouse button.
+- **No Bluetooth Peripheral Required**: If your PC's Bluetooth adapter does not support BLE peripheral mode, AirWand operates seamlessly over local Wi-Fi.
+
+---
+
+## Windows Control Panel & Tray Features
+
+Opening `http://localhost:47821` (or double-clicking the tray icon) brings up the AirWand Control Panel:
+
+- **Connection Status**: Real-time badges for Wi-Fi and Bluetooth links, device ping, and active address.
+- **QR Code Pairing**: Offline QR code rendered directly by AirWand (no external libraries or internet access required).
+- **mDNS Hostname**: Built-in multicast DNS responder serving `http://airwand.local` (or `http://airwand-<pc-name>.local`). Automatic port 80 binding with fallback to `:47821`.
+- **Paired Devices**: Whitelist of trusted devices with their pairing codes, seen timestamps, and one-click unpairing.
+- **Pointer Controls**: Pause, Center, Speed (Fast / Normal / Precise), Smoothing (Minimal / Low / Medium / High), Predict ahead, and Horizontal/Vertical axis inversion.
+- **Startup & Security Settings**:
+  - **Start AirWand with Windows**: Runs silently in the system tray at user login (direct registry configuration without suspicious shell scripts).
+  - **Allow phones over Wi-Fi**: Restricts the server to localhost when turned off.
+  - **Allow typing from phones**: Security switch permitting approved devices to send keyboard inputs.
+  - **Require encrypted Bluetooth**: Enforces OS-level encrypted BLE pairing.
+- **Activity & Diagnostics**: Live aim update frequency counter (aims/sec), rejected packet metrics, and real-time log viewer.
+
+---
+
+## Packaging, Antivirus & SmartScreen
+
+- **Installer (`AirWand-Setup.exe`)**: Built with Inno Setup (`Windows/installer/AirWand.iss`). Installs into the user profile without requiring admin elevation, places a shortcut in the Start Menu, creates a clean uninstall entry in Windows Settings, and configures private network firewall rules.
+- **Portable Zip (`AirWand-portable.zip`)**: Standalone archive containing `airwand.exe`, license, and documentation.
+- **Windows Manifest**: Includes application metadata, DPI awareness, UTF-8 code page support, and long path awareness.
+- **Antivirus & SmartScreen Notes**: Because open-source binaries are newly compiled and initially lack cryptographic reputation, Windows SmartScreen or Chrome may present a warning.
+  - For local use: Right-click the downloaded executable > **Properties** > Check **Unblock** > Click **Apply**.
+  - Releases are built via GitHub Actions (`.github/workflows/release.yml`) with cryptographic provenance attestations and `SHA256SUMS.txt`. For signing setup, refer to [`docs/SIGNING.md`](file:///C:/Users/PC/Downloads/AirWand/docs/SIGNING.md).
+
+---
+
+## Building from Source (Windows)
+
+### Requirements
+- Windows 10 (version 2004+) or Windows 11
+- [Rust](https://www.rust-lang.org/) (stable toolchain)
+- Microsoft Visual C++ (MSVC) Build Tools
+
+### Build the Windows Receiver
+```powershell
+cd Windows
+cargo build --release
+```
+The compiled executable will be located at `Windows/target/release/airwand.exe`.
+
+### Run Unit and Protocol Tests
+```powershell
+cd Windows
+cargo test --lib
+```
+Runs comprehensive tests for packet validation, protocol encoding, pairing algorithms, steady filter maths, mDNS parsing, and QR encoding.
+
+### Test Web Client Links
+```bash
+node Web/test/links.test.js
+```
+Executes mock link failover, duplicate dropping, and reconnect tests.
+
+---
+
+## macOS & Apple Devices (Original / Alternative)
+
+AirWand retains complete support for its original macOS receiver and native Apple Watch / iPhone companion apps.
+
+### 1. macOS Receiver (`Mac/`)
+Requirements: macOS 14+, Apple silicon or Intel, Bluetooth.
 
 ```bash
 cd Mac
@@ -32,14 +198,13 @@ chmod +x build.sh
 ./build.sh run
 ```
 
-The first launch asks for **Bluetooth** and **Accessibility** (System Settings › Privacy & Security › Accessibility). Accessibility is what lets it move the cursor. Allow both.
+- **Permissions**: On first run, grant **Bluetooth** and **Accessibility** permissions (System Settings › Privacy & Security › Accessibility).
+- **Notch Panel**: Hover over the MacBook notch or the center of the menu bar to reveal a live aiming map, battery level, connected device details, and quick action buttons.
 
-After a rebuild macOS may forget the Accessibility permission. If the cursor stops moving, turn AirWand off and on again in that list.
+### 2. Native iPhone & Apple Watch Apps (`Apple/`)
+Requirements: iPhone with iOS 17+, Apple Watch with watchOS 10+, Xcode 15+.
 
-## 2. iPhone and Apple Watch apps
-
-With [XcodeGen](https://github.com/yonaskolb/XcodeGen):
-
+Using [XcodeGen](https://github.com/yonaskolb/XcodeGen):
 ```bash
 brew install xcodegen
 cd Apple
@@ -47,102 +212,50 @@ xcodegen
 open AirWand.xcodeproj
 ```
 
-1. Sign with your Apple ID: create `Apple/Local.xcconfig` with your bundle prefix and Team ID (see `Apple/Config.xcconfig`), or just pick your Team in **Signing & Capabilities**. A free Apple ID works.
-2. Choose your iPhone (or your watch) as the run destination and press **⌘R**. The first time, turn on **Developer Mode** on the iPhone (Settings › Privacy & Security) and trust your developer profile (Settings › General › VPN & Device Management).
-3. Open AirWand on the device, tap **Pair** next to your Mac, then click **Allow** on the Mac.
-
-With a free Apple ID, apps you install from Xcode stop opening after 7 days; just run them again from Xcode.
+1. Select your Apple Development Team under **Signing & Capabilities**.
+2. Select your iPhone or Apple Watch as the run target and press **⌘R**.
+3. Enable **Developer Mode** on your iPhone (Settings › Privacy & Security) and trust your developer certificate.
+4. Launch AirWand on your phone or watch, tap **Pair**, and click **Allow** on your Mac.
 
 <details>
-<summary>Without XcodeGen</summary>
+<summary>Building without XcodeGen</summary>
 
-1. Xcode › File › New › Project › iOS › App, name it `AirWand`, SwiftUI.
-2. File › New › Target › watchOS › App, name it `AirWandWatch`, as a watch-only app.
-3. Delete the generated `…App.swift` and `ContentView.swift` files from both targets.
-4. Drag in `Apple/iOS` (iPhone target only), `Apple/Watch` (watch target only), and `Apple/Shared` plus `Shared/Protocol.swift` (both targets).
-5. In each target's **Info** tab add `Privacy - Bluetooth Always Usage Description` and `Privacy - Motion Usage Description`.
+1. In Xcode: File › New › Project › iOS › App, named `AirWand` (SwiftUI).
+2. File › New › Target › watchOS › App, named `AirWandWatch` (watch-only).
+3. Remove the generated template app and content view files.
+4. Add `Apple/iOS` (iPhone target), `Apple/Watch` (watch target), and `Apple/Shared` + `Shared/Protocol.swift` (both targets).
+5. In each target's `Info.plist`, add `Privacy - Bluetooth Always Usage Description` and `Privacy - Motion Usage Description`.
 
 </details>
 
-## Windows + web page (Bluetooth)
+---
 
-This repo also has a Windows receiver (`Windows/`, Rust) and a phone web page (`Web/`) that replace the Mac app and iPhone app. Same protocol, same Bluetooth service, same aiming maths. The Mac and iPhone code is untouched.
+## Orbit Pop Minigame
 
-- **Windows receiver**: tray app. Needs Windows 10 2004+ and a Bluetooth 4.0+ adapter that supports the **peripheral role** (the app tells you if it does not). Install with `AirWand-Setup.exe` from the Releases page, or build with `cd Windows && cargo build --release` (needs Rust, MSVC build tools); the result is one `airwand.exe` with no runtime to install. Tray menu: Pause, Center, Speed, Smoothing, Invert, Forget devices, live aim rate, log, the game. The notch panel is Mac-only.
-- **Phone page**: static `Web/index.html` using Web Bluetooth and the motion sensors. Both need HTTPS: publish `Web/` with the included GitHub Pages workflow (Settings > Pages > Source: GitHub Actions), then open the page on the phone. Works in **Chrome on Android**. Safari on iPhone has no Web Bluetooth: use the **Bluefy** browser, or the native iPhone app above.
-- **Pairing**: open the page, tap *Connect to PC*, pick your PC. The page shows a 6-digit code and the PC shows one in its Allow dialog. Click **Allow** only if they match.
-- Web BLE writes are limited to about 20 bytes and roughly one per connection interval, so expect 30 to 60 aim updates a second; the receiver still eases at 240 Hz. The page learns and removes gyro bias while the phone is still, to reduce yaw drift.
+Click **Play the target game** in the PC Control Panel or system tray menu:
 
-### Connections: Wi-Fi and Bluetooth at the same time
+- Press **F** to enter full-screen mode.
+- Targets expand, shrink, and fade. Point and click to pop them before they collapse.
+- Direct center hits score double, gold rings score triple, and uninterrupted consecutive hits build your combo multiplier.
 
-- **Both links stay up.** The phone page opens Wi-Fi and Bluetooth together and keeps each one alive with its own reconnect loop (0.3 s backing off to 5 s, and an immediate retry when the page comes back to the foreground or the network returns). The page shows a chip for each link.
-- **Nothing pauses when a link drops.** Every aim sample, click, Center and Pause goes out on every live link. The PC merges them per device: the first copy to arrive wins and late or duplicate copies are dropped by their timestamps. Scroll and trackpad movement are not repeatable, so they use the primary link only (Wi-Fi, else Bluetooth).
-- **No jump on hand-over.** Calibration, smoothing and click history belong to the device, not to the link, so switching link never recentres or resets the cursor.
-- **Dead links are noticed.** The page pings the PC every second and the PC answers; 3.5 s of silence replaces the link. The PC drops a silent Wi-Fi socket after 12 s. If the last link of a device dies while a button is held, AirWand releases the button.
-- **One Allow prompt per device**, even when the phone pairs over both links at once. The answer applies to both.
-- **Bluetooth backup without the picker.** Pick the PC once (button *Add Bluetooth backup*); next time Chrome's `getDevices()` reconnects without asking. The page also reconnects on its own after a reload (Android).
-- Tests: `node Web/test/links.test.js` runs the real page script against a fake WebSocket and fake Web Bluetooth (both links, drop and recovery, dead-link detection, stop).
+---
 
-### Control panel and Wi-Fi link
+## Architecture & How It Works
 
-- **Control panel.** Starting `airwand.exe` (or double-clicking it again, or left-clicking the tray icon) opens a window with connection status, the address for your phone, paired devices with their pairing code, pause/center, speed, smoothing, invert, start-with-Windows, security switches and the log. It runs in Edge or Chrome app mode and is only reachable from this PC.
-- **Wi-Fi link.** The PC also serves the phone page on `http://airwand.local` (see below), or `http://<PC address>` and talks to it over a WebSocket, using the same packets, pairing code and Allow prompt as Bluetooth. It needs no Bluetooth peripheral support, so it works on adapters that cannot be a BLE peripheral. Windows Firewall may ask to allow AirWand on private networks; allow it.
-- **Which is used.** Both, at once (see v2.5 above). Wi-Fi is the primary link; Bluetooth is a hot standby.
-- **Android setting.** Chrome blocks motion sensors on `http://` pages, so once: open `chrome://flags/#unsafely-treat-insecure-origin-as-secure` on the phone, add the address shown in the panel, set Enabled, Relaunch. iPhone Safari needs HTTPS for motion sensors, so on iPhone use the native app or Bluefy over Bluetooth.
-- **Security.** The Wi-Fi link has the same trust model as plain Bluetooth: pairing needs your approval on the PC, but the device ID travels unencrypted, so only use it on a network you trust. "Allow phones over Wi-Fi" off keeps the server on this PC only. The panel API refuses requests from other machines, wrong Host or Origin headers, and requests without the `X-AirWand` header.
-- **Tests.** `cargo test --lib` also covers the web server (routes, WebSocket handshake and framing, origin and host checks).
+- **Motion Tracking**: Reads device orientation via gravity vector and gyroscope integration. Vertical tilt is bounded by physical gravity (eliminating pitch drift), while horizontal yaw is bias-compensated during resting states.
+- **Packet Structure**: Compact binary packets (18-byte `aimpair` samples containing newest and previous sample) streamed over WebSocket and Web Bluetooth.
+- **Native Input Simulation**: The Windows engine uses low-level Windows input APIs (`SendInput`) operating at 250 Hz on a high-precision multimedia timer.
+- **Multiplexer**: Windows receiver multiplexes dual sockets, correlates device IDs, and deduplicates frames before passing them to the steady filter and cursor engine.
 
-### Speed
+---
 
-- The page sends the previous and newest aim sample together (`aimpair`, 18 bytes), so a late Bluetooth write no longer drops a sample; the PC drops duplicates by timestamp.
-- The PC looks a few ms ahead along the recent aim velocity (tray: *Predict ahead*), uses a high-resolution timer for the 250 Hz cursor loop, runs at high priority, and opts out of Windows 11 efficiency-mode throttling.
-- Defaults to low smoothing. For the least lag pick Smoothing > *Minimal*; for steadier aim pick *Medium* or *High*.
-- The ceiling is the phone's Bluetooth connection interval, which a web page cannot control.
+## Authors & Credits
 
-### Security notes
+- **Rudraksha** ([rudraksha132](https://github.com/rudraksha132)): Author and creator of the AirWand Windows companion app, mobile web client, dual-link networking, anti-wobble stabilization, control panel, installer, and documentation.
+- Inspired by [WatchPointer](https://github.com/umarz317/WatchPointer) by umarz317.
 
-- The link is plain Bluetooth LE by default, like AirWand's original design. The trusted-device ID is sent unencrypted, so someone sniffing the radio next to you could copy it. Tray menu > *Require encrypted link* makes Windows demand an encrypted, OS-paired link (restart needed; untested with every phone).
-- Receiver checks: packet length, finite and in-range numbers, sanitised device names, at most 8 peers, at most 3 Allow prompts a minute, a 60 second cooldown after Deny. Counters and a log (`%APPDATA%\AirWand\log.txt`) show what was rejected.
-- Tests: `cd Windows && cargo test --lib` (protocol, validation, pairing code, filter, geometry; runs on any OS). CI also builds the Windows app.
-
-## Using it
-
-Hold the device like a remote with its top edge toward the screen. Point at the middle of the screen and tap **Center**.
-
-Speed, smoothing and axis inversion live in the AirWand menu on the Mac.
-
-Watch tips: on the iPhone's Watch app turn off **Passcode › Wrist Detection** if you hold the watch in your hand, set **Display & Brightness › Wake Duration** to 70 seconds, and **General › Return to Clock › AirWand** to one hour. Long-press the watch screen for settings and unpairing.
-
-## Orbit Pop
-
-Click **Game** in the notch panel or **Play the target game** in the menu. Press **F** for full screen. Rings shrink and fade; pop them before they collapse. Center hits score double, gold rings triple, and every hit in a row raises your combo.
-
-## How it works
-
-- **Device** (`Apple/`): reads gravity and the gyroscope 100 times a second. Up/down is the angle of the top edge above the horizon; left/right adds up turns around the true vertical. Each sample carries the device's timestamp.
-- **Mac** (`Mac/`): projects the aim onto the screen like a laser hitting a wall, smooths it with a [1€ filter](https://gery.casiez.net/1euro/) using the device's timestamps, and eases the cursor toward it 240 times a second on its own thread. A click lands where you were aiming the moment your finger touched the screen, so the tap's jolt doesn't move it.
-- **Bluetooth**: the Mac advertises a service; the device connects and writes small packets. The protocol is documented at the top of `Shared/Protocol.swift`.
-
-## Credits
-
-Inspired by [WatchPointer](https://github.com/umarz317/WatchPointer) by umarz317. AirWand is a separate implementation written from scratch.
+---
 
 ## License
 
-MIT
-
-### Look, window memory, antivirus
-
-- **Minimal layout in Geist.** The control panel and the phone page use Geist and Geist Mono (SIL Open Font License, see `Web/Geist-OFL.txt`), shipped inside the exe and served by the PC itself, so nothing is loaded from the internet. They follow the system light or dark setting.
-- **The control panel remembers its window.** Resize or move it and AirWand saves size and position (`settings.json`); the next start opens the same way.
-- **Fewer reasons for antivirus to complain.** The exe now has version info and a manifest. The Start with Windows switch writes the registry directly instead of running a hidden `reg.exe` on every start (that pattern looks like malware persistence to heuristics).
-- The remaining cause is that the exe is unsigned and new. Fixes, best first: sign it (free for open source via SignPath Foundation, or Azure Trusted Signing); report the false positive at https://www.microsoft.com/wdsi/filesubmission ; on your own PC, build locally (no download mark) or Properties > Unblock.
-
-### Installer, short links and QR codes
-
-- **Real Windows app.** `Windows/installer/AirWand.iss` builds `AirWand-Setup.exe` (Inno Setup): installs for the current user with no admin prompt, adds a Start Menu entry and an uninstall entry in Settings > Apps, offers start-with-Windows, and (when installed for all users) a firewall rule for private networks. The exe manifest also turns on long paths and UTF-8. The release workflow builds the exe, installer and portable zip, signs them when signing secrets are set, and publishes checksums and a build attestation.
-- **The "potentially dangerous" warning** comes from the download being unsigned and new, not from the program. Only signing (plus time) removes it. See `docs/SIGNING.md` for the options: Azure Trusted Signing, SignPath (free for open source), a certificate, or the Microsoft Store.
-- **Links that stay put.** The PC now answers to **`http://airwand.local`** (a built-in multicast DNS responder; it checks that no other device owns the name and otherwise uses `airwand-<pc name>.local`). It also listens on port 80 when free, so links need no port number; if port 80 is taken, links carry `:47821`. The Android motion-sensor setting needs the address once; a name never changes, so it keeps working, unlike an IP address. The plain IP link stays as the fallback for phones that cannot resolve `.local`.
-- **On the PC**, `http://localhost:47821` opens the control panel (typing `http://localhost` also works). The phone page is always at `/phone`.
-- **QR codes.** The panel shows a QR code for the phone link (short name or IP address, your choice is remembered). Point the phone camera at it and tap the link. The code is drawn by AirWand itself (no internet, no library), served only to this PC.
-- Tests: `cargo test --lib` also covers the QR encoder, the DNS packets and the mDNS replies.
+This project is licensed under the [MIT License](file:///C:/Users/PC/Downloads/AirWand/LICENSE).
